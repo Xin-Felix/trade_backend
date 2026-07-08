@@ -4,9 +4,11 @@
 写入 PostgreSQL/TimescaleDB。
 """
 
+import sys
 import time
 from datetime import date, datetime, timedelta
 
+import pandas as pd
 import tushare as ts
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
@@ -15,6 +17,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.base import SessionLocal
 from app.models.stock import (
+    SectorMoneyflowConcept,
+    SectorMoneyflowIndustry,
     StockBasic,
     StockDaily,
     StockDailyBasic,
@@ -23,6 +27,10 @@ from app.models.stock import (
     StockWeekly,
     StockYearly,
 )
+
+
+def _log(message: str):
+    print(message, flush=True)
 
 # 初始化 Tushare Pro
 _pro = None
@@ -77,7 +85,6 @@ def _to_numeric(value, precision: int = 4):
     """把 pandas 标量转成 Decimal，空值返回 None。"""
     if value is None:
         return None
-    import pandas as pd
 
     if pd.isna(value):
         return None
@@ -186,7 +193,6 @@ _KLINE_TUSHARE_APIS = {
     "D": "daily",
     "W": "weekly",
     "M": "monthly",
-    "Y": "yearly",
 }
 
 
@@ -211,20 +217,125 @@ def _build_kline_values(row, ts_code_default: str, period: str) -> dict | None:
 
 
 def _upsert_klines(db: Session, model, rows: list[dict]) -> int:
-    """批量写入 K 线数据。"""
-    count = 0
-    for values in rows:
-        stmt = (
-            insert(model)
-            .values(values)
-            .on_conflict_do_update(
-                index_elements=["ts_code", "trade_date"],
-                set_={k: v for k, v in values.items() if k not in ("ts_code", "trade_date")},
+    """批量写入 K 线数据，使用 PostgreSQL ON CONFLICT DO UPDATE。"""
+    if not rows:
+        return 0
+
+    stmt = insert(model).values(rows)
+    update_dict = {
+        c.name: stmt.excluded[c.name]
+        for c in model.__table__.columns
+        if c.name not in ("ts_code", "trade_date")
+    }
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["ts_code", "trade_date"],
+        set_=update_dict,
+    )
+    db.execute(stmt)
+    return len(rows)
+
+
+def _upsert_daily_basic(db: Session, rows: list[dict]) -> int:
+    """批量写入日线因子数据。"""
+    if not rows:
+        return 0
+
+    stmt = insert(StockDailyBasic).values(rows)
+    update_dict = {
+        c.name: stmt.excluded[c.name]
+        for c in StockDailyBasic.__table__.columns
+        if c.name not in ("ts_code", "trade_date")
+    }
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["ts_code", "trade_date"],
+        set_=update_dict,
+    )
+    db.execute(stmt)
+    return len(rows)
+
+
+def _aggregate_yearly_from_monthly(monthly_rows: list[StockMonthly]) -> list[StockYearly]:
+    """从月 K 聚合生成年 K。"""
+    from collections import defaultdict
+
+    groups: dict[int, list[StockMonthly]] = defaultdict(list)
+    for m in monthly_rows:
+        if m.trade_date is None:
+            continue
+        groups[m.trade_date.year].append(m)
+
+    results = []
+    for year in sorted(groups.keys()):
+        group = sorted(groups[year], key=lambda x: x.trade_date)
+        results.append(
+            StockYearly(
+                ts_code=group[0].ts_code,
+                trade_date=date(year, 12, 31),
+                open=group[0].open,
+                high=max((m.high for m in group), default=group[0].high),
+                low=min((m.low for m in group), default=group[0].low),
+                close=group[-1].close,
+                vol=sum((m.vol or 0) for m in group),
+                amount=sum((m.amount or 0) for m in group),
             )
         )
-        db.execute(stmt)
-        count += 1
-    return count
+    return results
+
+
+def _sync_yearly_from_monthly(
+    db: Session,
+    ts_code: str,
+    start_date: date,
+    end_date: date,
+) -> int:
+    """从月 K 聚合同步单只股票年 K。"""
+    monthly_rows = (
+        db.execute(
+            select(StockMonthly)
+            .where(
+                StockMonthly.ts_code == ts_code,
+                StockMonthly.trade_date >= start_date,
+                StockMonthly.trade_date <= end_date,
+            )
+            .order_by(StockMonthly.trade_date)
+        )
+        .scalars()
+        .all()
+    )
+
+    if not monthly_rows:
+        return 0
+
+    yearly_rows = _aggregate_yearly_from_monthly(monthly_rows)
+    values_list = [
+        {
+            "ts_code": r.ts_code,
+            "trade_date": r.trade_date,
+            "open": r.open,
+            "high": r.high,
+            "low": r.low,
+            "close": r.close,
+            "vol": r.vol,
+            "amount": r.amount,
+        }
+        for r in yearly_rows
+    ]
+
+    if not values_list:
+        return 0
+
+    stmt = insert(StockYearly).values(values_list)
+    update_dict = {
+        c.name: stmt.excluded[c.name]
+        for c in StockYearly.__table__.columns
+        if c.name not in ("ts_code", "trade_date")
+    }
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["ts_code", "trade_date"],
+        set_=update_dict,
+    )
+    db.execute(stmt)
+    return len(values_list)
 
 
 def _sync_klines_for_code(
@@ -297,10 +408,12 @@ def _sync_klines_by_date(
 
             count += _upsert_klines(db, model, rows)
 
-            if count % 5000 == 0:
-                db.commit()
+            # 每个交易日批量 upsert 后立即提交，避免事务过大
+            db.commit()
+            _log(f"      {period} {trade_date_str} 完成 {len(rows)} 条")
         except Exception as exc:
-            print(f"[_sync_klines_by_date] failed for {period} {trade_date_str}: {exc}")
+            _log(f"[_sync_klines_by_date] failed for {period} {trade_date_str}: {exc}")
+            db.rollback()
             continue
 
     return count
@@ -342,9 +455,9 @@ def sync_klines(
                 codes = [row[0] for row in db.execute(select(StockBasic.ts_code)).all()]
             for code in codes:
                 try:
-                    count += _sync_klines_for_code(db, code, period, start_date, end_date)
+                    count += _sync_yearly_from_monthly(db, code, start_date, end_date)
                 except Exception as exc:
-                    print(f"[sync_klines] failed for {code}: {exc}")
+                    _log(f"[sync_klines] failed for {code}: {exc}")
                     continue
         else:
             count = _sync_klines_by_date(db, period, start_date, end_date)
@@ -414,22 +527,12 @@ def _sync_daily_basic_by_date(
                 if values:
                     rows.append(values)
 
-            for values in rows:
-                stmt = (
-                    insert(StockDailyBasic)
-                    .values(values)
-                    .on_conflict_do_update(
-                        index_elements=["ts_code", "trade_date"],
-                        set_={k: v for k, v in values.items() if k not in ("ts_code", "trade_date")},
-                    )
-                )
-                db.execute(stmt)
-                count += 1
-
-            if count % 5000 == 0:
-                db.commit()
+            count += _upsert_daily_basic(db, rows)
+            db.commit()
+            _log(f"      daily_basic {trade_date_str} 完成 {len(rows)} 条")
         except Exception as exc:
-            print(f"[_sync_daily_basic_by_date] failed for {trade_date_str}: {exc}")
+            _log(f"[_sync_daily_basic_by_date] failed for {trade_date_str}: {exc}")
+            db.rollback()
             continue
 
     return count
@@ -453,23 +556,13 @@ def _sync_daily_basic_for_code(
     if df is None or df.empty:
         return 0
 
-    count = 0
+    rows = []
     for _, row in df.iterrows():
         values = _build_daily_basic_values(row, ts_code)
-        if values is None:
-            continue
+        if values:
+            rows.append(values)
 
-        stmt = (
-            insert(StockDailyBasic)
-            .values(values)
-            .on_conflict_do_update(
-                index_elements=["ts_code", "trade_date"],
-                set_={k: v for k, v in values.items() if k not in ("ts_code", "trade_date")},
-            )
-        )
-        db.execute(stmt)
-        count += 1
-
+    count = _upsert_daily_basic(db, rows)
     return count
 
 
@@ -505,6 +598,53 @@ def sync_daily_basic(
 # ---------------------------------------------------------------------------
 
 
+def _build_fina_indicator_values(row, ts_code_default: str) -> dict | None:
+    """从 tushare 行数据构建财务指标字段字典。"""
+    end_date = _parse_date(row.get("end_date"))
+    if end_date is None:
+        return None
+
+    values = {
+        "ts_code": str(row.get("ts_code", ts_code_default)),
+        "ann_date": _parse_date(row.get("ann_date")),
+        "end_date": end_date,
+    }
+
+    for column in StockFinaIndicator.__table__.columns:
+        name = column.name
+        if name in values or name in ("created_at", "updated_at"):
+            continue
+        values[name] = _to_numeric(row.get(name))
+
+    return values
+
+
+def _upsert_fina_indicator(db: Session, rows: list[dict]) -> int:
+    """批量写入财务指标数据，按 (ts_code, end_date) 去重。"""
+    if not rows:
+        return 0
+
+    # tushare 可能返回同一报告期的多条记录（不同 report_type），去重保留最后一条
+    seen = {}
+    for row in rows:
+        key = (row.get("ts_code"), row.get("end_date"))
+        seen[key] = row
+    deduped_rows = list(seen.values())
+
+    stmt = insert(StockFinaIndicator).values(deduped_rows)
+    update_dict = {
+        c.name: stmt.excluded[c.name]
+        for c in StockFinaIndicator.__table__.columns
+        if c.name not in ("ts_code", "end_date")
+    }
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["ts_code", "end_date"],
+        set_=update_dict,
+    )
+    db.execute(stmt)
+    return len(deduped_rows)
+
+
 def sync_fina_indicator(
     ts_code: str | None = None,
     years: int = 10,
@@ -531,7 +671,7 @@ def sync_fina_indicator(
                 sync_stock_basic(db=db)
                 codes = [row[0] for row in db.execute(select(StockBasic.ts_code)).all()]
 
-        for code in codes:
+        for idx, code in enumerate(codes, start=1):
             try:
                 df = pro.fina_indicator(
                     ts_code=code,
@@ -543,41 +683,161 @@ def sync_fina_indicator(
                 if df is None or df.empty:
                     continue
 
+                rows = []
                 for _, row in df.iterrows():
-                    values = {
-                        "ts_code": str(row.get("ts_code", code)),
-                        "ann_date": _parse_date(row.get("ann_date")),
-                        "end_date": _parse_date(row.get("end_date")),
-                    }
+                    values = _build_fina_indicator_values(row, code)
+                    if values:
+                        rows.append(values)
 
-                    if values["end_date"] is None:
-                        continue
+                count += _upsert_fina_indicator(db, rows)
 
-                    # 自动映射所有数值字段
-                    for column in StockFinaIndicator.__table__.columns:
-                        name = column.name
-                        if name in values or name in ("created_at", "updated_at"):
-                            continue
-                        values[name] = _to_numeric(row.get(name))
-
-                    stmt = (
-                        insert(StockFinaIndicator)
-                        .values(values)
-                        .on_conflict_do_update(
-                            index_elements=["ts_code", "end_date"],
-                            set_={k: v for k, v in values.items() if k not in ("ts_code", "end_date")},
-                        )
-                    )
-                    db.execute(stmt)
-                    count += 1
-
-                if count % 1000 == 0:
+                if idx % 100 == 0:
                     db.commit()
+                    _log(f"      fina_indicator 进度: {idx}/{len(codes)}, 累计 {count} 条")
             except Exception as exc:
-                print(f"[sync_fina_indicator] failed for {code}: {exc}")
+                _log(f"[sync_fina_indicator] failed for {code}: {exc}")
+                db.rollback()
                 continue
 
         db.commit()
+        _log(f"      fina_indicator 完成: 累计 {count} 条")
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# 板块资金流（同花顺）
+# ---------------------------------------------------------------------------
+
+
+_SECTOR_MONEYFLOW_API_MAP = {
+    "industry": ("moneyflow_ind_ths", SectorMoneyflowIndustry),
+    "concept": ("moneyflow_cnt_ths", SectorMoneyflowConcept),
+}
+
+
+def _build_sector_moneyflow_values(
+    row, sector_type: str, ts_code_default: str
+) -> dict | None:
+    """从 tushare 行数据构建板块资金流字段字典。"""
+    trade_date = _parse_date(row.get("trade_date"))
+    if trade_date is None:
+        return None
+
+    ts_code = str(row.get("ts_code", ts_code_default))
+    values = {
+        "ts_code": ts_code,
+        "trade_date": trade_date,
+        "lead_stock": str(row.get("lead_stock", "")) if row.get("lead_stock") is not None else None,
+        "pct_change": _to_numeric(row.get("pct_change")),
+        "company_num": _to_numeric(row.get("company_num")),
+        "pct_change_stock": _to_numeric(row.get("pct_change_stock")),
+        "close_price": _to_numeric(row.get("close_price")),
+        "net_buy_amount": _to_numeric(row.get("net_buy_amount")),
+        "net_sell_amount": _to_numeric(row.get("net_sell_amount")),
+        "net_amount": _to_numeric(row.get("net_amount")),
+    }
+
+    if sector_type == "industry":
+        values["industry"] = str(row.get("industry", "")) if row.get("industry") is not None else None
+        values["close"] = _to_numeric(row.get("close"))
+    else:
+        values["name"] = str(row.get("name", "")) if row.get("name") is not None else None
+        values["industry_index"] = _to_numeric(row.get("industry_index"))
+
+    return values
+
+
+def _upsert_sector_moneyflow(
+    db: Session, model, rows: list[dict]
+) -> int:
+    """批量写入板块资金流数据，按 (ts_code, trade_date) 去重。"""
+    if not rows:
+        return 0
+
+    stmt = insert(model).values(rows)
+    update_dict = {
+        c.name: stmt.excluded[c.name]
+        for c in model.__table__.columns
+        if c.name not in ("ts_code", "trade_date")
+    }
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["ts_code", "trade_date"],
+        set_=update_dict,
+    )
+    db.execute(stmt)
+    return len(rows)
+
+
+def sync_sector_moneyflow(
+    sector_type: str = "industry",
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session | None = None,
+) -> int:
+    """
+    同步同花顺板块资金流数据。
+
+    - sector_type: industry（行业）或 concept（概念）
+    - 默认从数据库中最新日期同步到最近一个交易日；首次从 2024-09-10 开始
+    """
+    if sector_type not in _SECTOR_MONEYFLOW_API_MAP:
+        raise ValueError(f"不支持的板块类型: {sector_type}")
+
+    api_name, model = _SECTOR_MONEYFLOW_API_MAP[sector_type]
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        if end_date is None:
+            end_date = date.today()
+
+        if start_date is None:
+            latest = db.execute(
+                select(model.trade_date).order_by(model.trade_date.desc()).limit(1)
+            ).scalar_one_or_none()
+            if latest is None:
+                # 同花顺板块资金流数据最早从 2024-09-10 开始提供
+                start_date = date(2024, 9, 10)
+            else:
+                start_date = latest
+
+        trade_dates = _get_trade_dates(pro, start_date, end_date)
+        if not trade_dates:
+            return 0
+
+        count = 0
+        for trade_date_str in trade_dates:
+            try:
+                df = pro.query(api_name, trade_date=trade_date_str)
+                _tushare_sleep()
+
+                if df is None or df.empty:
+                    continue
+
+                rows = []
+                for _, row in df.iterrows():
+                    values = _build_sector_moneyflow_values(
+                        row, sector_type, str(row.get("ts_code", ""))
+                    )
+                    if values:
+                        rows.append(values)
+
+                count += _upsert_sector_moneyflow(db, model, rows)
+                db.commit()
+                _log(f"      {api_name} {trade_date_str} 完成 {len(rows)} 条")
+            except Exception as exc:
+                _log(f"[sync_sector_moneyflow] {api_name} failed for {trade_date_str}: {exc}")
+                db.rollback()
+                continue
+
+        _log(f"      {api_name} 完成: 累计 {count} 条")
         return count
     finally:
         if should_close_db:
@@ -599,4 +859,6 @@ def sync_all(years: int = 10) -> dict:
     results["yearly"] = sync_klines(period="Y", years=years)
     results["daily_basic"] = sync_daily_basic(years=years)
     results["fina_indicator"] = sync_fina_indicator(years=years)
+    results["sector_moneyflow_industry"] = sync_sector_moneyflow("industry")
+    results["sector_moneyflow_concept"] = sync_sector_moneyflow("concept")
     return results

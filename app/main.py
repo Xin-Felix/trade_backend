@@ -6,7 +6,9 @@ from sqlalchemy import text
 
 from app.api.v1.api import api_router
 from app.core.config import settings
+from app.core.security import get_password_hash
 from app.db.base import Base, SessionLocal, engine
+from app.models.user import User as UserModel
 from app.services.auth_service import create_user
 
 # 导入所有模型，确保 Base.metadata 能创建表
@@ -57,10 +59,16 @@ async def lifespan(app: FastAPI):
     # 开发环境初始化测试账号，方便 iOS 端快速验证
     db = SessionLocal()
     try:
-        create_user(db, email="test@example.com", password="123456", name="Test User")
-    except ValueError:
-        # 用户已存在，忽略
-        pass
+        try:
+            create_user(db, email="1538933906@qq.com", password="123456", name="Test User")
+        except ValueError as exc:
+            if "邮箱已存在" not in str(exc):
+                raise
+            # 用户已存在时重置测试账号密码，确保 iOS 测试登录始终可用
+            user = db.query(UserModel).filter(UserModel.email == "1538933906@qq.com").first()
+            if user is not None:
+                user.hashed_password = get_password_hash("123456")
+                db.commit()
     finally:
         db.close()
 
@@ -87,7 +95,7 @@ app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
-    return {"message": "Widgets Studio API is running"}
+    return {"message": "Ying+ API is running"}
 
 
 @app.get("/health")

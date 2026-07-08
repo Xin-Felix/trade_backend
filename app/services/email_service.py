@@ -6,7 +6,7 @@ from app.core.config import settings
 
 
 def _build_login_code_email(code: str) -> tuple[str, str]:
-    subject = f"Widgets Studio 登录验证码：{code}"
+    subject = f"Ying+ 登录验证码：{code}"
     body = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -20,7 +20,7 @@ def _build_login_code_email(code: str) -> tuple[str, str]:
 </head>
 <body>
     <div class="container">
-        <p>你正在登录 Widgets Studio，请在 5 分钟内输入以下验证码：</p>
+        <p>你正在登录 Ying+，请在 5 分钟内输入以下验证码：</p>
         <div class="code">{code}</div>
         <p class="footer">如不是你本人操作，请忽略此邮件。</p>
     </div>
@@ -39,7 +39,7 @@ def send_login_code_email(to_email: str, code: str) -> None:
     sender = settings.smtp_sender or settings.smtp_username
 
     msg = MIMEText(html, "html", "utf-8")
-    msg["From"] = formataddr(("Widgets Studio", sender))
+    msg["From"] = formataddr(("Ying+", sender))
     msg["To"] = formataddr(("", to_email))
     msg["Subject"] = subject
 

@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    app_name: str = "Widgets Studio Backend"
+    app_name: str = "Ying+ Backend"
     # 生产环境必须改成随机字符串（至少 32 字节），并通过环境变量注入
     secret_key: str = "your-secret-key-change-in-production"
     algorithm: str = "HS256"
@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     apple_client_id: str = ""  # Apple Sign In 的 Bundle ID
 
     # PostgreSQL 数据库连接（Docker 内使用服务名 postgres）
-    database_url: str = "postgresql+psycopg2://widgets_user:widgets_password@127.0.0.1:5432/widgets_studio"
+    database_url: str = "postgresql+psycopg2://yingplus_user:yingplus_password@127.0.0.1:5432/yingplus"
 
     # Tushare Pro Token
     tushare_token: str = ""

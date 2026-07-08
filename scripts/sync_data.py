@@ -22,6 +22,7 @@ from app.services.data_sync_service import (
     sync_daily_basic,
     sync_fina_indicator,
     sync_klines,
+    sync_sector_moneyflow,
     sync_stock_basic,
 )
 
@@ -40,6 +41,13 @@ def main():
     parser.add_argument("--skip-kline", action="store_true", help="跳过同步 K 线")
     parser.add_argument("--skip-daily-basic", action="store_true", help="跳过同步日线因子")
     parser.add_argument("--skip-fina", action="store_true", help="跳过同步财务指标")
+    parser.add_argument("--skip-sector-moneyflow", action="store_true", help="跳过同步板块资金流")
+    parser.add_argument(
+        "--sector-types",
+        type=str,
+        default="industry,concept",
+        help="同步哪些板块资金流类型，逗号分隔，默认 industry,concept",
+    )
     args = parser.parse_args()
 
     codes = None
@@ -88,6 +96,14 @@ def main():
             count = sync_fina_indicator(years=args.years)
         results["fina_indicator"] = count
         _log(f"      完成，共 {count} 条")
+
+    if not args.skip_sector_moneyflow:
+        sector_types = [s.strip().lower() for s in args.sector_types.split(",") if s.strip()]
+        for sector_type in sector_types:
+            _log(f"[5] 同步 {sector_type} 板块资金流...")
+            count = sync_sector_moneyflow(sector_type=sector_type)
+            results[f"sector_moneyflow_{sector_type}"] = count
+            _log(f"      完成，共 {count} 条")
 
     _log("\n同步结果：")
     for key, value in results.items():

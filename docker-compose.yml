@@ -1,18 +1,18 @@
 services:
   postgres:
     image: timescale/timescaledb:latest-pg16
-    container_name: widgets_studio_postgres
+    container_name: yingplus_postgres
     restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-widgets_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-widgets_password}
-      POSTGRES_DB: ${POSTGRES_DB:-widgets_studio}
-      PGUSER: ${POSTGRES_USER:-widgets_user}
-      PGDATABASE: ${POSTGRES_DB:-widgets_studio}
+      POSTGRES_USER: ${POSTGRES_USER:-yingplus_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yingplus_password}
+      POSTGRES_DB: ${POSTGRES_DB:-yingplus}
+      PGUSER: ${POSTGRES_USER:-yingplus_user}
+      PGDATABASE: ${POSTGRES_DB:-yingplus}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - yingplus_postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready"]
       interval: 10s
@@ -21,12 +21,12 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: widgets_studio_redis
+    container_name: yingplus_redis
     restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - yingplus_redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -37,12 +37,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: widgets_studio_backend
+    container_name: yingplus_backend
     restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-widgets_user}:${POSTGRES_PASSWORD:-widgets_password}@postgres:5432/${POSTGRES_DB:-widgets_studio}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-yingplus_user}:${POSTGRES_PASSWORD:-yingplus_password}@postgres:5432/${POSTGRES_DB:-yingplus}
       REDIS_URL: redis://redis:6379/0
       SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-10080}
@@ -63,5 +63,5 @@ services:
         condition: service_healthy
 
 volumes:
-  postgres_data:
-  redis_data:
+  yingplus_postgres_data:
+  yingplus_redis_data:

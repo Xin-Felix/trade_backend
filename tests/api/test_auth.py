@@ -4,18 +4,18 @@ from fastapi.testclient import TestClient
 def test_login_email_success(client: TestClient):
     response = client.post(
         "/api/v1/auth/login/email",
-        json={"email": "test@example.com", "password": "123456"},
+        json={"email": "1538933906@qq.com", "password": "123456"},
     )
     assert response.status_code == 200
     data = response.json()
     assert data["access_token"]
-    assert data["user"]["email"] == "test@example.com"
+    assert data["user"]["email"] == "1538933906@qq.com"
 
 
 def test_login_email_failure(client: TestClient):
     response = client.post(
         "/api/v1/auth/login/email",
-        json={"email": "test@example.com", "password": "wrong"},
+        json={"email": "1538933906@qq.com", "password": "wrong"},
     )
     assert response.status_code == 401
 

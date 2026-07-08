@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 def _get_token(client: TestClient) -> str:
     response = client.post(
         "/api/v1/auth/login/email",
-        json={"email": "test@example.com", "password": "123456"},
+        json={"email": "1538933906@qq.com", "password": "123456"},
     )
     return response.json()["access_token"]
 
