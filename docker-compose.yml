@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: widgets_studio_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-widgets_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-widgets_password}
+      POSTGRES_DB: ${POSTGRES_DB:-widgets_studio}
+      PGUSER: ${POSTGRES_USER:-widgets_user}
+      PGDATABASE: ${POSTGRES_DB:-widgets_studio}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: widgets_studio_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: widgets_studio_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-widgets_user}:${POSTGRES_PASSWORD:-widgets_password}@postgres:5432/${POSTGRES_DB:-widgets_studio}
+      REDIS_URL: redis://redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-10080}
+      TUSHARE_TOKEN: ${TUSHARE_TOKEN:-}
+      MOCK_STOCK_DATA: ${MOCK_STOCK_DATA:-false}
+      SMTP_SERVER: ${SMTP_SERVER:-smtp.qq.com}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_SENDER: ${SMTP_SENDER:-}
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-true}
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
