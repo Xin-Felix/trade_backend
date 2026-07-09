@@ -367,5 +367,234 @@ class SectorMoneyflowConcept(Base):
     )
 
 
+class StockMoneyflow(Base):
+    """个股资金流向"""
+
+    __tablename__ = "stock_moneyflow"
+
+    ts_code = Column(String(20), primary_key=True, comment="Tushare 代码")
+    trade_date = Column(Date, primary_key=True, comment="交易日期")
+
+    buy_sm_vol = Column(Numeric(20, 4), nullable=True, comment="小单买入量（手）")
+    buy_sm_amount = Column(Numeric(20, 4), nullable=True, comment="小单买入金额（万元）")
+    sell_sm_vol = Column(Numeric(20, 4), nullable=True, comment="小单卖出量（手）")
+    sell_sm_amount = Column(Numeric(20, 4), nullable=True, comment="小单卖出金额（万元）")
+    buy_md_vol = Column(Numeric(20, 4), nullable=True, comment="中单买入量（手）")
+    buy_md_amount = Column(Numeric(20, 4), nullable=True, comment="中单买入金额（万元）")
+    sell_md_vol = Column(Numeric(20, 4), nullable=True, comment="中单卖出量（手）")
+    sell_md_amount = Column(Numeric(20, 4), nullable=True, comment="中单卖出金额（万元）")
+    buy_lg_vol = Column(Numeric(20, 4), nullable=True, comment="大单买入量（手）")
+    buy_lg_amount = Column(Numeric(20, 4), nullable=True, comment="大单买入金额（万元）")
+    sell_lg_vol = Column(Numeric(20, 4), nullable=True, comment="大单卖出量（手）")
+    sell_lg_amount = Column(Numeric(20, 4), nullable=True, comment="大单卖出金额（万元）")
+    buy_elg_vol = Column(Numeric(20, 4), nullable=True, comment="特大单买入量（手）")
+    buy_elg_amount = Column(Numeric(20, 4), nullable=True, comment="特大单买入金额（万元）")
+    sell_elg_vol = Column(Numeric(20, 4), nullable=True, comment="特大单卖出量（手）")
+    sell_elg_amount = Column(Numeric(20, 4), nullable=True, comment="特大单卖出金额（万元）")
+    net_mf_vol = Column(Numeric(20, 4), nullable=True, comment="净流入量（手）")
+    net_mf_amount = Column(Numeric(20, 4), nullable=True, comment="净流入额（万元）")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("ts_code", "trade_date", name="uix_stock_moneyflow"),
+    )
+
+
+class MoneyflowHsgt(Base):
+    """沪深港通资金流向"""
+
+    __tablename__ = "moneyflow_hsgt"
+
+    trade_date = Column(Date, primary_key=True, comment="交易日期")
+
+    ggt_ss = Column(Numeric(20, 4), nullable=True, comment="港股通（上海）")
+    ggt_sz = Column(Numeric(20, 4), nullable=True, comment="港股通（深圳）")
+    hgt = Column(Numeric(20, 4), nullable=True, comment="沪股通（百万元）")
+    sgt = Column(Numeric(20, 4), nullable=True, comment="深股通（百万元）")
+    north_money = Column(Numeric(20, 4), nullable=True, comment="北向资金（百万元）")
+    south_money = Column(Numeric(20, 4), nullable=True, comment="南向资金（百万元）")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class IndexBasic(Base):
+    """指数基础信息"""
+
+    __tablename__ = "index_basic"
+
+    ts_code = Column(String(20), primary_key=True, comment="指数代码")
+
+    name = Column(String(100), nullable=True, comment="指数名称")
+    market = Column(String(20), nullable=True, comment="市场")
+    publisher = Column(String(100), nullable=True, comment="发布方")
+    category = Column(String(50), nullable=True, comment="指数类别")
+    base_date = Column(Date, nullable=True, comment="基期")
+    base_point = Column(Numeric(20, 4), nullable=True, comment="基点")
+    list_date = Column(Date, nullable=True, comment="发布日期")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class IndexDaily(Base):
+    """指数日线行情"""
+
+    __tablename__ = "index_daily"
+
+    ts_code = Column(String(20), primary_key=True, comment="指数代码")
+    trade_date = Column(Date, primary_key=True, comment="交易日期")
+
+    open = Column(Numeric(20, 4), nullable=True, comment="开盘价")
+    high = Column(Numeric(20, 4), nullable=True, comment="最高价")
+    low = Column(Numeric(20, 4), nullable=True, comment="最低价")
+    close = Column(Numeric(20, 4), nullable=True, comment="收盘价")
+    pre_close = Column(Numeric(20, 4), nullable=True, comment="昨收价")
+    change = Column(Numeric(20, 4), nullable=True, comment="涨跌额")
+    pct_chg = Column(Numeric(20, 4), nullable=True, comment="涨跌幅")
+    vol = Column(Numeric(20, 4), nullable=True, comment="成交量（手）")
+    amount = Column(Numeric(20, 4), nullable=True, comment="成交额（千元）")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("ts_code", "trade_date", name="uix_index_daily"),
+    )
+
+
+class StockLimit(Base):
+    """涨跌停股票（stk_limit）"""
+
+    __tablename__ = "stock_limit"
+
+    trade_date = Column(Date, primary_key=True, comment="交易日期")
+    ts_code = Column(String(20), primary_key=True, comment="Tushare 代码")
+
+    up_limit = Column(Numeric(20, 4), nullable=True, comment="涨停价")
+    down_limit = Column(Numeric(20, 4), nullable=True, comment="跌停价")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "ts_code", name="uix_stock_limit"),
+    )
+
+
+class TopList(Base):
+    """龙虎榜每日明细"""
+
+    __tablename__ = "top_list"
+
+    trade_date = Column(Date, primary_key=True, comment="交易日期")
+    ts_code = Column(String(20), primary_key=True, comment="Tushare 代码")
+
+    name = Column(String(100), nullable=True, comment="股票名称")
+    close = Column(Numeric(20, 4), nullable=True, comment="收盘价")
+    pct_change = Column(Numeric(20, 4), nullable=True, comment="涨跌幅")
+    turnover_rate = Column(Numeric(20, 4), nullable=True, comment="换手率")
+    amount = Column(Numeric(20, 4), nullable=True, comment="龙虎榜成交金额")
+    l_sell = Column(Numeric(20, 4), nullable=True, comment="龙虎榜卖出额")
+    l_buy = Column(Numeric(20, 4), nullable=True, comment="龙虎榜买入额")
+    l_amount = Column(Numeric(20, 4), nullable=True, comment="龙虎榜成交额")
+    net_amount = Column(Numeric(20, 4), nullable=True, comment="净额")
+    net_rate = Column(Numeric(20, 4), nullable=True, comment="净占比")
+    amount_rate = Column(Numeric(20, 4), nullable=True, comment="成交额占比")
+    float_values = Column(Numeric(20, 4), nullable=True, comment="流通市值")
+    reason = Column(String(255), nullable=True, comment="上榜原因")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("trade_date", "ts_code", name="uix_top_list"),
+    )
+
+
+class TopInst(Base):
+    """龙虎榜机构明细"""
+
+    __tablename__ = "top_inst"
+
+    trade_date = Column(Date, primary_key=True, comment="交易日期")
+    ts_code = Column(String(20), primary_key=True, comment="Tushare 代码")
+    exalter = Column(String(255), primary_key=True, comment="营业部名称")
+    side = Column(String(10), primary_key=True, comment="0 卖，1 买")
+
+    buy = Column(Numeric(20, 4), nullable=True, comment="买入额")
+    buy_rate = Column(Numeric(20, 4), nullable=True, comment="买入占总成交比例")
+    sell = Column(Numeric(20, 4), nullable=True, comment="卖出额")
+    sell_rate = Column(Numeric(20, 4), nullable=True, comment="卖出占总成交比例")
+    net_buy = Column(Numeric(20, 4), nullable=True, comment="净买额")
+    reason = Column(String(255), nullable=True, comment="上榜原因")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ThsIndex(Base):
+    """同花顺指数基础信息"""
+
+    __tablename__ = "ths_index"
+
+    ts_code = Column(String(20), primary_key=True, comment="指数代码")
+
+    name = Column(String(100), nullable=True, comment="指数名称")
+    count = Column(Integer, nullable=True, comment="成分股数量")
+    exchange = Column(String(20), nullable=True, comment="交易市场")
+    list_date = Column(Date, nullable=True, comment="上市日期")
+    type = Column(String(10), nullable=True, comment="指数类型")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ThsDaily(Base):
+    """同花顺指数日线"""
+
+    __tablename__ = "ths_daily"
+
+    ts_code = Column(String(20), primary_key=True, comment="指数代码")
+    trade_date = Column(Date, primary_key=True, comment="交易日期")
+
+    open = Column(Numeric(20, 4), nullable=True, comment="开盘价")
+    high = Column(Numeric(20, 4), nullable=True, comment="最高价")
+    low = Column(Numeric(20, 4), nullable=True, comment="最低价")
+    close = Column(Numeric(20, 4), nullable=True, comment="收盘价")
+    pre_close = Column(Numeric(20, 4), nullable=True, comment="昨收价")
+    avg_price = Column(Numeric(20, 4), nullable=True, comment="平均价")
+    change = Column(Numeric(20, 4), nullable=True, comment="涨跌额")
+    pct_change = Column(Numeric(20, 4), nullable=True, comment="涨跌幅")
+    vol = Column(Numeric(20, 4), nullable=True, comment="成交量")
+    turnover_rate = Column(Numeric(20, 4), nullable=True, comment="换手率")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("ts_code", "trade_date", name="uix_ths_daily"),
+    )
+
+
+class ThsMember(Base):
+    """同花顺指数成分股"""
+
+    __tablename__ = "ths_member"
+
+    ts_code = Column(String(20), primary_key=True, comment="指数代码")
+    con_code = Column(String(20), primary_key=True, comment="成分股代码")
+    con_name = Column(String(100), nullable=True, comment="成分股名称")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("ts_code", "con_code", name="uix_ths_member"),
+    )
+
+
 # 兼容旧导入名称
 StockKline = StockDaily

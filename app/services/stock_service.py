@@ -11,18 +11,28 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.redis import redis_client
 from app.db.base import SessionLocal
 from app.models.stock import (
+    IndexDaily,
+    MoneyflowHsgt,
     SectorMoneyflowConcept,
     SectorMoneyflowIndustry,
     StockBasic,
     StockDaily,
     StockDailyBasic,
+    StockLimit,
+    StockMoneyflow,
     StockMonthly,
     StockWeekly,
     StockYearly,
+    ThsDaily,
+    ThsIndex,
+    ThsMember,
+    TopInst,
+    TopList,
 )
-from app.schemas.stock import KlineData, StockData
+from app.schemas.stock import IntradayKlineData, KlineData, StockData
 
 
 # 初始化 Tushare Pro（行情接口主要用于实时补数据，本地以库为准）
@@ -110,17 +120,31 @@ def get_stock_quote(code: str) -> StockData:
                 name=_stock_name(db, ts_code),
                 price=0.0,
                 change_percent=0.0,
+                pre_close=None,
                 updated_at=datetime.now().isoformat(),
             )
 
-        prev_close = latest.pre_close or latest.open
-        change_percent = _format_change_percent(prev_close, latest.close)
+        # 昨收价 = 数据库最新日线的收盘价（对今天来说，最新日线就是昨天）
+        # 如果今天的数据已入库，则取 pre_close；否则取 close 作为昨收
+        today = date.today()
+        if latest.trade_date and latest.trade_date >= today:
+            # 今天的数据已入库，用它的 pre_close
+            pre_close_price = latest.pre_close or latest.open
+            current_price = latest.close
+        else:
+            # 数据库最新日期 < 今天（交易中/今天还没入库）
+            # 昨收 = 最新日线的 close
+            pre_close_price = latest.close
+            current_price = latest.close  # 非实时，iOS 端会用分时最新价覆盖
+
+        change_percent = _format_change_percent(pre_close_price, current_price)
 
         return StockData(
             code=code,
             name=_stock_name(db, ts_code),
-            price=float(latest.close) if latest.close else 0.0,
+            price=float(current_price) if current_price else 0.0,
             change_percent=change_percent,
+            pre_close=float(pre_close_price) if pre_close_price else None,
             updated_at=datetime.now().isoformat(),
         )
     finally:
@@ -135,6 +159,100 @@ def _is_index_code(ts_code: str) -> bool:
     if ts_code.endswith(".SZ") and ts_code.split(".")[0].startswith("399"):
         return True
     return False
+
+
+def _akshare_symbol(code: str) -> str:
+    """把用户输入代码转成 akshare 分钟线接口需要的 symbol（sh600519 / sz000001）。"""
+    code = code.strip().upper()
+    if "." in code:
+        pure, suffix = code.split(".", 1)
+        if suffix == "SH":
+            return f"sh{pure}"
+        if suffix == "SZ":
+            return f"sz{pure}"
+        if suffix == "BJ":
+            return f"bj{pure}"
+        return code
+    if code.startswith("6"):
+        return f"sh{code}"
+    if code.startswith("0") or code.startswith("3"):
+        return f"sz{code}"
+    if code.startswith("8") or code.startswith("4"):
+        return f"bj{code}"
+    return code
+
+
+def _intraday_cache_ttl(latest_datetime_str: str) -> int:
+    """根据最新 K 线时间判断数据是否完整，返回缓存 TTL（秒）。
+
+    - 当天交易未结束：数据还在变，缓存短（30 秒）
+    - 当天已收盘或历史日期：数据不会再变，缓存长（7 天）
+    """
+    try:
+        latest = datetime.strptime(latest_datetime_str, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return 30
+
+    now = datetime.now()
+    market_close = latest.replace(hour=15, minute=0, second=0, microsecond=0)
+
+    # 最新 K 线时间早于今天，说明是历史完整数据
+    if latest.date() < now.date():
+        return 7 * 24 * 60 * 60
+
+    # 今天且已收盘（>= 15:00），数据完整
+    if latest >= market_close:
+        return 7 * 24 * 60 * 60
+
+    # 今天未收盘，实时数据还在更新
+    return 30
+
+
+def get_intraday_klines(code: str, period: str = "1", limit: int = 240) -> list[IntradayKlineData]:
+    """通过 akshare 获取实时分钟 K 线，结果写入 Redis 缓存（不存库）。"""
+    if settings.mock_stock_data:
+        return _mock_intraday_klines(code, period=period, limit=limit)
+
+    ts_code = _normalize_code(code)
+    symbol = _akshare_symbol(code)
+    cache_key = f"stock:intraday:{ts_code}:{period}"
+
+    # 优先读 Redis 缓存（短 TTL）
+    cached = redis_client.get(cache_key)
+    if cached and isinstance(cached, list):
+        return [IntradayKlineData(**item) for item in cached[:limit]]
+
+    try:
+        import akshare as ak
+
+        df = ak.stock_zh_a_minute(symbol=symbol, period=period, adjust="")
+        if df is None or df.empty:
+            return []
+
+        df = df.sort_values("day", ascending=False).reset_index(drop=True)
+        result = []
+        for _, row in df.head(limit).iterrows():
+            result.append(
+                IntradayKlineData(
+                    ts_code=ts_code,
+                    datetime=str(row["day"]),
+                    period=period,
+                    open=float(row["open"]) if row["open"] is not None else 0.0,
+                    high=float(row["high"]) if row["high"] is not None else 0.0,
+                    low=float(row["low"]) if row["low"] is not None else 0.0,
+                    close=float(row["close"]) if row["close"] is not None else 0.0,
+                    volume=float(row["volume"]) if "volume" in row and row["volume"] is not None else None,
+                    amount=float(row["amount"]) if "amount" in row and row["amount"] is not None else None,
+                )
+            )
+
+        # 根据数据是否已收盘决定缓存时间：盘中 30 秒，收盘后 7 天
+        ttl = _intraday_cache_ttl(result[0].datetime) if result else 30
+        redis_client.set(cache_key, [r.model_dump() for r in result], ex=ttl)
+        return result
+    except Exception as exc:
+        # 拉取失败时如果有缓存也先返回空，避免影响接口
+        raise RuntimeError(f"获取分时 K 线失败: {exc}") from exc
 
 
 def get_klines(code: str, period: str = "D", limit: int = 30) -> list[KlineData]:
@@ -524,6 +642,307 @@ def get_sector_moneyflow_trend(
 
 
 # ---------------------------------------------------------------------------
+# 个股资金流向 / 沪深港通 / 指数 / 涨跌停 / 龙虎榜 / THS 指数
+# ---------------------------------------------------------------------------
+
+
+def get_stock_moneyflow(code: str, limit: int = 30) -> list[dict]:
+    """获取个股资金流向。"""
+    ts_code = _normalize_code(code)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.execute(
+                select(StockMoneyflow)
+                .where(StockMoneyflow.ts_code == ts_code)
+                .order_by(StockMoneyflow.trade_date.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+
+        return [
+            {
+                "ts_code": r.ts_code,
+                "trade_date": r.trade_date.strftime("%Y%m%d") if r.trade_date else "",
+                "buy_sm_amount": float(r.buy_sm_amount) if r.buy_sm_amount else None,
+                "sell_sm_amount": float(r.sell_sm_amount) if r.sell_sm_amount else None,
+                "buy_md_amount": float(r.buy_md_amount) if r.buy_md_amount else None,
+                "sell_md_amount": float(r.sell_md_amount) if r.sell_md_amount else None,
+                "buy_lg_amount": float(r.buy_lg_amount) if r.buy_lg_amount else None,
+                "sell_lg_amount": float(r.sell_lg_amount) if r.sell_lg_amount else None,
+                "buy_elg_amount": float(r.buy_elg_amount) if r.buy_elg_amount else None,
+                "sell_elg_amount": float(r.sell_elg_amount) if r.sell_elg_amount else None,
+                "net_mf_amount": float(r.net_mf_amount) if r.net_mf_amount else None,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+def get_moneyflow_hsgt(start_date: str | None = None, end_date: str | None = None, limit: int = 30) -> list[dict]:
+    """获取沪深港通资金流向。"""
+    db = SessionLocal()
+    try:
+        query = select(MoneyflowHsgt).order_by(MoneyflowHsgt.trade_date.desc())
+
+        if start_date:
+            d = datetime.strptime(start_date, "%Y%m%d").date()
+            query = query.where(MoneyflowHsgt.trade_date >= d)
+        if end_date:
+            d = datetime.strptime(end_date, "%Y%m%d").date()
+            query = query.where(MoneyflowHsgt.trade_date <= d)
+
+        rows = db.execute(query.limit(limit)).scalars().all()
+
+        return [
+            {
+                "trade_date": r.trade_date.strftime("%Y%m%d") if r.trade_date else "",
+                "ggt_ss": float(r.ggt_ss) if r.ggt_ss else None,
+                "ggt_sz": float(r.ggt_sz) if r.ggt_sz else None,
+                "hgt": float(r.hgt) if r.hgt else None,
+                "sgt": float(r.sgt) if r.sgt else None,
+                "north_money": float(r.north_money) if r.north_money else None,
+                "south_money": float(r.south_money) if r.south_money else None,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+def get_index_daily(code: str, limit: int = 30) -> list[dict]:
+    """获取指数日线行情。"""
+    ts_code = _normalize_code(code)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.execute(
+                select(IndexDaily)
+                .where(IndexDaily.ts_code == ts_code)
+                .order_by(IndexDaily.trade_date.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+
+        return [
+            {
+                "ts_code": r.ts_code,
+                "trade_date": r.trade_date.strftime("%Y%m%d") if r.trade_date else "",
+                "open": float(r.open) if r.open else None,
+                "high": float(r.high) if r.high else None,
+                "low": float(r.low) if r.low else None,
+                "close": float(r.close) if r.close else None,
+                "pre_close": float(r.pre_close) if r.pre_close else None,
+                "change": float(r.change) if r.change else None,
+                "pct_chg": float(r.pct_chg) if r.pct_chg else None,
+                "vol": float(r.vol) if r.vol else None,
+                "amount": float(r.amount) if r.amount else None,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+def get_stock_limit(trade_date: str | None = None, limit: int = 100) -> list[dict]:
+    """获取涨跌停股票列表。"""
+    db = SessionLocal()
+    try:
+        query = select(StockLimit)
+
+        if trade_date:
+            d = datetime.strptime(trade_date, "%Y%m%d").date()
+            query = query.where(StockLimit.trade_date == d)
+        else:
+            latest_date = db.execute(
+                select(StockLimit.trade_date).order_by(StockLimit.trade_date.desc()).limit(1)
+            ).scalar_one_or_none()
+            if latest_date is None:
+                return []
+            query = query.where(StockLimit.trade_date == latest_date)
+
+        rows = db.execute(query.limit(limit)).scalars().all()
+
+        return [
+            {
+                "trade_date": r.trade_date.strftime("%Y%m%d") if r.trade_date else "",
+                "ts_code": r.ts_code,
+                "up_limit": float(r.up_limit) if r.up_limit else None,
+                "down_limit": float(r.down_limit) if r.down_limit else None,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+def get_top_list(trade_date: str | None = None, limit: int = 100) -> list[dict]:
+    """获取龙虎榜每日明细。"""
+    db = SessionLocal()
+    try:
+        query = select(TopList).order_by(TopList.net_amount.desc())
+
+        if trade_date:
+            d = datetime.strptime(trade_date, "%Y%m%d").date()
+            query = query.where(TopList.trade_date == d)
+        else:
+            latest_date = db.execute(
+                select(TopList.trade_date).order_by(TopList.trade_date.desc()).limit(1)
+            ).scalar_one_or_none()
+            if latest_date is None:
+                return []
+            query = query.where(TopList.trade_date == latest_date)
+
+        rows = db.execute(query.limit(limit)).scalars().all()
+
+        return [
+            {
+                "trade_date": r.trade_date.strftime("%Y%m%d") if r.trade_date else "",
+                "ts_code": r.ts_code,
+                "name": r.name,
+                "close": float(r.close) if r.close else None,
+                "pct_change": float(r.pct_change) if r.pct_change else None,
+                "turnover_rate": float(r.turnover_rate) if r.turnover_rate else None,
+                "amount": float(r.amount) if r.amount else None,
+                "net_amount": float(r.net_amount) if r.net_amount else None,
+                "net_rate": float(r.net_rate) if r.net_rate else None,
+                "reason": r.reason,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+def get_ths_index_list(limit: int = 1000) -> list[dict]:
+    """获取同花顺指数列表。"""
+    db = SessionLocal()
+    try:
+        rows = (
+            db.execute(
+                select(ThsIndex)
+                .order_by(ThsIndex.ts_code)
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+
+        return [
+            {
+                "ts_code": r.ts_code,
+                "name": r.name,
+                "count": int(r.count) if r.count is not None else None,
+                "type": r.type,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+def get_ths_daily(code: str, limit: int = 30) -> list[dict]:
+    """获取同花顺指数日线行情。"""
+    ts_code = _normalize_code(code)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.execute(
+                select(ThsDaily)
+                .where(ThsDaily.ts_code == ts_code)
+                .order_by(ThsDaily.trade_date.desc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+
+        return [
+            {
+                "ts_code": r.ts_code,
+                "trade_date": r.trade_date.strftime("%Y%m%d") if r.trade_date else "",
+                "open": float(r.open) if r.open else None,
+                "high": float(r.high) if r.high else None,
+                "low": float(r.low) if r.low else None,
+                "close": float(r.close) if r.close else None,
+                "pre_close": float(r.pre_close) if r.pre_close else None,
+                "pct_change": float(r.pct_change) if r.pct_change else None,
+                "vol": float(r.vol) if r.vol else None,
+                "turnover_rate": float(r.turnover_rate) if r.turnover_rate else None,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+def get_ths_member(code: str, limit: int = 1000) -> list[dict]:
+    """获取同花顺指数成分股。"""
+    ts_code = _normalize_code(code)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.execute(
+                select(ThsMember)
+                .where(ThsMember.ts_code == ts_code)
+                .order_by(ThsMember.con_code)
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+
+        return [
+            {
+                "ts_code": r.ts_code,
+                "con_code": r.con_code,
+                "con_name": r.con_name,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+def get_top_inst(trade_date: str | None = None, ts_code: str | None = None, limit: int = 100) -> list[dict]:
+    """获取龙虎榜机构明细。"""
+    db = SessionLocal()
+    try:
+        query = select(TopInst).order_by(TopInst.trade_date.desc(), TopInst.net_buy.desc())
+
+        if trade_date:
+            d = datetime.strptime(trade_date, "%Y%m%d").date()
+            query = query.where(TopInst.trade_date == d)
+        if ts_code:
+            query = query.where(TopInst.ts_code == _normalize_code(ts_code))
+
+        rows = db.execute(query.limit(limit)).scalars().all()
+
+        return [
+            {
+                "trade_date": r.trade_date.strftime("%Y%m%d") if r.trade_date else "",
+                "ts_code": r.ts_code,
+                "exalter": r.exalter,
+                "buy": float(r.buy) if r.buy else None,
+                "buy_rate": float(r.buy_rate) if r.buy_rate else None,
+                "sell": float(r.sell) if r.sell else None,
+                "sell_rate": float(r.sell_rate) if r.sell_rate else None,
+                "net_buy": float(r.net_buy) if r.net_buy else None,
+                "side": r.side,
+                "reason": r.reason,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Mock 数据（开发环境无 Tushare token 时使用）
 # ---------------------------------------------------------------------------
 
@@ -669,3 +1088,39 @@ def _mock_klines(code: str, period: str = "D", limit: int = 30) -> list[KlineDat
         )
         for r in rows
     ]
+
+
+def _mock_intraday_klines(code: str, period: str = "1", limit: int = 240) -> list[IntradayKlineData]:
+    """Mock 环境下生成分钟级 K 线。"""
+    import random
+
+    ts_code = _normalize_code(code)
+    today = datetime.now().replace(hour=9, minute=31, second=0, microsecond=0)
+    price = Decimal(str(random.uniform(10, 200)))
+    result = []
+    minutes = int(period) if period.isdigit() else 1
+
+    for i in range(min(limit, 240)):
+        dt = today - timedelta(minutes=i * minutes)
+        change = Decimal(str(random.uniform(-0.01, 0.01)))
+        open_p = price
+        close = price * (Decimal("1") + change)
+        high = max(open_p, close) * (Decimal("1") + Decimal(str(random.uniform(0, 0.005))))
+        low = min(open_p, close) * (Decimal("1") - Decimal(str(random.uniform(0, 0.005))))
+        volume = Decimal(str(random.uniform(1000, 100000)))
+        result.append(
+            IntradayKlineData(
+                ts_code=ts_code,
+                datetime=dt.strftime("%Y-%m-%d %H:%M:%S"),
+                period=period,
+                open=float(open_p),
+                high=float(high),
+                low=float(low),
+                close=float(close),
+                volume=float(volume),
+                amount=float(volume * close),
+            )
+        )
+        price = close
+
+    return result

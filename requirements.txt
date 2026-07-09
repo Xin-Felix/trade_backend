@@ -10,6 +10,10 @@ python-multipart==0.0.9
 
 # 股票数据
 tushare==1.4.13
+akshare==1.18.35
+
+# 缓存
+redis==5.0.8
 
 # 数据库
 sqlalchemy==2.0.30

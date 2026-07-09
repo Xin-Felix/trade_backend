@@ -24,8 +24,9 @@ docker compose up -d
 
 - Python 3.12 + FastAPI
 - PostgreSQL 16 + TimescaleDB
+- Redis（实时行情缓存）
 - SQLAlchemy 2.0 + Alembic
-- Tushare Pro（股票数据源）
+- Tushare Pro / akshare（股票数据源）
 - Docker + Docker Compose
 
 ## 常用命令

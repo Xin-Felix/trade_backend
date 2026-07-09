@@ -17,15 +17,25 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.base import SessionLocal
 from app.models.stock import (
+    IndexBasic,
+    IndexDaily,
+    MoneyflowHsgt,
     SectorMoneyflowConcept,
     SectorMoneyflowIndustry,
     StockBasic,
     StockDaily,
     StockDailyBasic,
     StockFinaIndicator,
+    StockLimit,
+    StockMoneyflow,
     StockMonthly,
     StockWeekly,
     StockYearly,
+    ThsDaily,
+    ThsIndex,
+    ThsMember,
+    TopInst,
+    TopList,
 )
 
 
@@ -845,6 +855,615 @@ def sync_sector_moneyflow(
 
 
 # ---------------------------------------------------------------------------
+# 更多股票相关数据（10000+ 积分可访问）
+# ---------------------------------------------------------------------------
+
+
+def _sync_by_trade_date(
+    db: Session,
+    pro,
+    api_name: str,
+    model,
+    build_values: callable,
+    start_date: date,
+    end_date: date,
+    log_prefix: str = "",
+) -> int:
+    """通用按交易日同步逻辑。"""
+    trade_dates = _get_trade_dates(pro, start_date, end_date)
+    if not trade_dates:
+        return 0
+
+    count = 0
+    for trade_date_str in trade_dates:
+        try:
+            df = pro.query(api_name, trade_date=trade_date_str)
+            _tushare_sleep()
+
+            if df is None or df.empty:
+                continue
+
+            rows = []
+            for _, row in df.iterrows():
+                values = build_values(row)
+                if values:
+                    rows.append(values)
+
+            if rows:
+                pk_columns = [c.name for c in model.__table__.primary_key.columns]
+                stmt = insert(model).values(rows)
+                update_dict = {
+                    c.name: stmt.excluded[c.name]
+                    for c in model.__table__.columns
+                    if c.name not in pk_columns and c.name not in ("created_at", "updated_at")
+                }
+                if update_dict:
+                    stmt = stmt.on_conflict_do_update(index_elements=pk_columns, set_=update_dict)
+                else:
+                    stmt = stmt.on_conflict_do_nothing(index_elements=pk_columns)
+                db.execute(stmt)
+                db.commit()
+
+            count += len(rows)
+            _log(f"      {log_prefix}{api_name} {trade_date_str} 完成 {len(rows)} 条")
+        except Exception as exc:
+            _log(f"[_sync_by_trade_date] {api_name} failed for {trade_date_str}: {exc}")
+            db.rollback()
+            continue
+
+    return count
+
+
+def _latest_trade_date(db: Session, model, date_column) -> date | None:
+    """获取某表最新交易日期。"""
+    return db.execute(select(date_column).order_by(date_column.desc()).limit(1)).scalar_one_or_none()
+
+
+# ---------------------------------------------------------------------------
+# 个股资金流向
+# ---------------------------------------------------------------------------
+
+
+def _build_stock_moneyflow_values(row) -> dict | None:
+    trade_date = _parse_date(row.get("trade_date"))
+    if trade_date is None:
+        return None
+    return {
+        "ts_code": str(row.get("ts_code", "")),
+        "trade_date": trade_date,
+        "buy_sm_vol": _to_numeric(row.get("buy_sm_vol")),
+        "buy_sm_amount": _to_numeric(row.get("buy_sm_amount")),
+        "sell_sm_vol": _to_numeric(row.get("sell_sm_vol")),
+        "sell_sm_amount": _to_numeric(row.get("sell_sm_amount")),
+        "buy_md_vol": _to_numeric(row.get("buy_md_vol")),
+        "buy_md_amount": _to_numeric(row.get("buy_md_amount")),
+        "sell_md_vol": _to_numeric(row.get("sell_md_vol")),
+        "sell_md_amount": _to_numeric(row.get("sell_md_amount")),
+        "buy_lg_vol": _to_numeric(row.get("buy_lg_vol")),
+        "buy_lg_amount": _to_numeric(row.get("buy_lg_amount")),
+        "sell_lg_vol": _to_numeric(row.get("sell_lg_vol")),
+        "sell_lg_amount": _to_numeric(row.get("sell_lg_amount")),
+        "buy_elg_vol": _to_numeric(row.get("buy_elg_vol")),
+        "buy_elg_amount": _to_numeric(row.get("buy_elg_amount")),
+        "sell_elg_vol": _to_numeric(row.get("sell_elg_vol")),
+        "sell_elg_amount": _to_numeric(row.get("sell_elg_amount")),
+        "net_mf_vol": _to_numeric(row.get("net_mf_vol")),
+        "net_mf_amount": _to_numeric(row.get("net_mf_amount")),
+    }
+
+
+def sync_stock_moneyflow(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session | None = None,
+) -> int:
+    """同步个股资金流向（全市场按交易日）。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            latest = _latest_trade_date(db, StockMoneyflow, StockMoneyflow.trade_date)
+            start_date = latest if latest else date(2024, 9, 10)
+
+        count = _sync_by_trade_date(
+            db, pro, "moneyflow", StockMoneyflow, _build_stock_moneyflow_values,
+            start_date, end_date, log_prefix="个股资金 "
+        )
+        _log(f"      moneyflow 完成: 累计 {count} 条")
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# 沪深港通资金流向
+# ---------------------------------------------------------------------------
+
+
+def _build_moneyflow_hsgt_values(row) -> dict | None:
+    trade_date = _parse_date(row.get("trade_date"))
+    if trade_date is None:
+        return None
+    return {
+        "trade_date": trade_date,
+        "ggt_ss": _to_numeric(row.get("ggt_ss")),
+        "ggt_sz": _to_numeric(row.get("ggt_sz")),
+        "hgt": _to_numeric(row.get("hgt")),
+        "sgt": _to_numeric(row.get("sgt")),
+        "north_money": _to_numeric(row.get("north_money")),
+        "south_money": _to_numeric(row.get("south_money")),
+    }
+
+
+def sync_moneyflow_hsgt(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session | None = None,
+) -> int:
+    """同步沪深港通资金流向。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            latest = _latest_trade_date(db, MoneyflowHsgt, MoneyflowHsgt.trade_date)
+            start_date = latest if latest else date(2014, 11, 17)
+
+        start_str = start_date.strftime("%Y%m%d")
+        end_str = end_date.strftime("%Y%m%d")
+
+        df = pro.moneyflow_hsgt(start_date=start_str, end_date=end_str)
+        _tushare_sleep()
+
+        if df is None or df.empty:
+            return 0
+
+        rows = [_build_moneyflow_hsgt_values(r) for _, r in df.iterrows()]
+        rows = [r for r in rows if r]
+
+        stmt = insert(MoneyflowHsgt).values(rows)
+        update_dict = {
+            c.name: stmt.excluded[c.name]
+            for c in MoneyflowHsgt.__table__.columns
+            if c.name != "trade_date"
+        }
+        stmt = stmt.on_conflict_do_update(index_elements=["trade_date"], set_=update_dict)
+        db.execute(stmt)
+        db.commit()
+
+        _log(f"      moneyflow_hsgt 完成: 累计 {len(rows)} 条")
+        return len(rows)
+    finally:
+        if should_close_db:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# 指数基础信息 & 指数日线
+# ---------------------------------------------------------------------------
+
+
+def sync_index_basic(db: Session | None = None) -> int:
+    """同步指数基础信息。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        df = pro.index_basic()
+        _tushare_sleep()
+
+        if df is None or df.empty:
+            return 0
+
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
+                "ts_code": str(row.get("ts_code", "")),
+                "name": str(row.get("name", "")) if row.get("name") is not None else None,
+                "market": str(row.get("market", "")) if row.get("market") is not None else None,
+                "publisher": str(row.get("publisher", "")) if row.get("publisher") is not None else None,
+                "category": str(row.get("category", "")) if row.get("category") is not None else None,
+                "base_date": _parse_date(row.get("base_date")),
+                "base_point": _to_numeric(row.get("base_point")),
+                "list_date": _parse_date(row.get("list_date")),
+            })
+
+        stmt = insert(IndexBasic).values(rows)
+        update_dict = {
+            c.name: stmt.excluded[c.name]
+            for c in IndexBasic.__table__.columns
+            if c.name != "ts_code"
+        }
+        stmt = stmt.on_conflict_do_update(index_elements=["ts_code"], set_=update_dict)
+        db.execute(stmt)
+        db.commit()
+
+        _log(f"      index_basic 完成: 累计 {len(rows)} 条")
+        return len(rows)
+    finally:
+        if should_close_db:
+            db.close()
+
+
+def _build_index_daily_values(row) -> dict | None:
+    trade_date = _parse_date(row.get("trade_date"))
+    if trade_date is None:
+        return None
+    return {
+        "ts_code": str(row.get("ts_code", "")),
+        "trade_date": trade_date,
+        "open": _to_numeric(row.get("open")),
+        "high": _to_numeric(row.get("high")),
+        "low": _to_numeric(row.get("low")),
+        "close": _to_numeric(row.get("close")),
+        "pre_close": _to_numeric(row.get("pre_close")),
+        "change": _to_numeric(row.get("change")),
+        "pct_chg": _to_numeric(row.get("pct_chg")),
+        "vol": _to_numeric(row.get("vol")),
+        "amount": _to_numeric(row.get("amount")),
+    }
+
+
+def sync_index_daily(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session | None = None,
+) -> int:
+    """同步指数日线行情。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            latest = _latest_trade_date(db, IndexDaily, IndexDaily.trade_date)
+            start_date = latest if latest else date(1990, 12, 19)
+
+        count = _sync_by_trade_date(
+            db, pro, "index_daily", IndexDaily, _build_index_daily_values,
+            start_date, end_date, log_prefix="指数日线 "
+        )
+        _log(f"      index_daily 完成: 累计 {count} 条")
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# 涨跌停（stk_limit）
+# ---------------------------------------------------------------------------
+
+
+def _build_stock_limit_values(row) -> dict | None:
+    trade_date = _parse_date(row.get("trade_date"))
+    if trade_date is None:
+        return None
+    return {
+        "trade_date": trade_date,
+        "ts_code": str(row.get("ts_code", "")),
+        "up_limit": _to_numeric(row.get("up_limit")),
+        "down_limit": _to_numeric(row.get("down_limit")),
+    }
+
+
+def sync_stock_limit(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session | None = None,
+) -> int:
+    """同步涨跌停股票数据。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            latest = _latest_trade_date(db, StockLimit, StockLimit.trade_date)
+            start_date = latest if latest else date(2024, 9, 10)
+
+        count = _sync_by_trade_date(
+            db, pro, "stk_limit", StockLimit, _build_stock_limit_values,
+            start_date, end_date, log_prefix="涨跌停 "
+        )
+        _log(f"      stk_limit 完成: 累计 {count} 条")
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# 龙虎榜
+# ---------------------------------------------------------------------------
+
+
+def _build_top_list_values(row) -> dict | None:
+    trade_date = _parse_date(row.get("trade_date"))
+    if trade_date is None:
+        return None
+    return {
+        "trade_date": trade_date,
+        "ts_code": str(row.get("ts_code", "")),
+        "name": str(row.get("name", "")) if row.get("name") is not None else None,
+        "close": _to_numeric(row.get("close")),
+        "pct_change": _to_numeric(row.get("pct_change")),
+        "turnover_rate": _to_numeric(row.get("turnover_rate")),
+        "amount": _to_numeric(row.get("amount")),
+        "l_sell": _to_numeric(row.get("l_sell")),
+        "l_buy": _to_numeric(row.get("l_buy")),
+        "l_amount": _to_numeric(row.get("l_amount")),
+        "net_amount": _to_numeric(row.get("net_amount")),
+        "net_rate": _to_numeric(row.get("net_rate")),
+        "amount_rate": _to_numeric(row.get("amount_rate")),
+        "float_values": _to_numeric(row.get("float_values")),
+        "reason": str(row.get("reason", "")) if row.get("reason") is not None else None,
+    }
+
+
+def sync_top_list(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session | None = None,
+) -> int:
+    """同步龙虎榜每日明细。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            latest = _latest_trade_date(db, TopList, TopList.trade_date)
+            start_date = latest if latest else date(2024, 9, 10)
+
+        count = _sync_by_trade_date(
+            db, pro, "top_list", TopList, _build_top_list_values,
+            start_date, end_date, log_prefix="龙虎榜 "
+        )
+        _log(f"      top_list 完成: 累计 {count} 条")
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
+def _build_top_inst_values(row) -> dict | None:
+    trade_date = _parse_date(row.get("trade_date"))
+    if trade_date is None:
+        return None
+    return {
+        "trade_date": trade_date,
+        "ts_code": str(row.get("ts_code", "")),
+        "exalter": str(row.get("exalter", "")) if row.get("exalter") is not None else None,
+        "buy": _to_numeric(row.get("buy")),
+        "buy_rate": _to_numeric(row.get("buy_rate")),
+        "sell": _to_numeric(row.get("sell")),
+        "sell_rate": _to_numeric(row.get("sell_rate")),
+        "net_buy": _to_numeric(row.get("net_buy")),
+        "side": str(row.get("side", "")) if row.get("side") is not None else None,
+        "reason": str(row.get("reason", "")) if row.get("reason") is not None else None,
+    }
+
+
+def sync_top_inst(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session | None = None,
+) -> int:
+    """同步龙虎榜机构明细。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            latest = _latest_trade_date(db, TopInst, TopInst.trade_date)
+            start_date = latest if latest else date(2024, 9, 10)
+
+        count = _sync_by_trade_date(
+            db, pro, "top_inst", TopInst, _build_top_inst_values,
+            start_date, end_date, log_prefix="龙虎榜机构 "
+        )
+        _log(f"      top_inst 完成: 累计 {count} 条")
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# 同花顺指数
+# ---------------------------------------------------------------------------
+
+
+def sync_ths_index(db: Session | None = None) -> int:
+    """同步同花顺指数基础信息。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        df = pro.ths_index()
+        _tushare_sleep()
+
+        if df is None or df.empty:
+            return 0
+
+        rows = []
+        for _, row in df.iterrows():
+            rows.append({
+                "ts_code": str(row.get("ts_code", "")),
+                "name": str(row.get("name", "")) if row.get("name") is not None else None,
+                "count": _to_numeric(row.get("count")),
+                "exchange": str(row.get("exchange", "")) if row.get("exchange") is not None else None,
+                "list_date": _parse_date(row.get("list_date")),
+                "type": str(row.get("type", "")) if row.get("type") is not None else None,
+            })
+
+        stmt = insert(ThsIndex).values(rows)
+        update_dict = {
+            c.name: stmt.excluded[c.name]
+            for c in ThsIndex.__table__.columns
+            if c.name != "ts_code"
+        }
+        stmt = stmt.on_conflict_do_update(index_elements=["ts_code"], set_=update_dict)
+        db.execute(stmt)
+        db.commit()
+
+        _log(f"      ths_index 完成: 累计 {len(rows)} 条")
+        return len(rows)
+    finally:
+        if should_close_db:
+            db.close()
+
+
+def _build_ths_daily_values(row) -> dict | None:
+    trade_date = _parse_date(row.get("trade_date"))
+    if trade_date is None:
+        return None
+    return {
+        "ts_code": str(row.get("ts_code", "")),
+        "trade_date": trade_date,
+        "open": _to_numeric(row.get("open")),
+        "high": _to_numeric(row.get("high")),
+        "low": _to_numeric(row.get("low")),
+        "close": _to_numeric(row.get("close")),
+        "pre_close": _to_numeric(row.get("pre_close")),
+        "avg_price": _to_numeric(row.get("avg_price")),
+        "change": _to_numeric(row.get("change")),
+        "pct_change": _to_numeric(row.get("pct_change")),
+        "vol": _to_numeric(row.get("vol")),
+        "turnover_rate": _to_numeric(row.get("turnover_rate")),
+    }
+
+
+def sync_ths_daily(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session | None = None,
+) -> int:
+    """同步同花顺指数日线。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            latest = _latest_trade_date(db, ThsDaily, ThsDaily.trade_date)
+            start_date = latest if latest else date(2024, 9, 10)
+
+        count = _sync_by_trade_date(
+            db, pro, "ths_daily", ThsDaily, _build_ths_daily_values,
+            start_date, end_date, log_prefix="THS日线 "
+        )
+        _log(f"      ths_daily 完成: 累计 {count} 条")
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
+def sync_ths_member(db: Session | None = None) -> int:
+    """同步同花顺指数成分股。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        codes = [row[0] for row in db.execute(select(ThsIndex.ts_code)).all()]
+        if not codes:
+            sync_ths_index(db=db)
+            codes = [row[0] for row in db.execute(select(ThsIndex.ts_code)).all()]
+
+        count = 0
+        for idx, ts_code in enumerate(codes, start=1):
+            try:
+                df = pro.ths_member(ts_code=ts_code)
+                _tushare_sleep()
+
+                if df is None or df.empty:
+                    continue
+
+                rows = []
+                for _, row in df.iterrows():
+                    rows.append({
+                        "ts_code": ts_code,
+                        "con_code": str(row.get("con_code", "")),
+                        "con_name": str(row.get("con_name", "")) if row.get("con_name") is not None else None,
+                    })
+
+                if rows:
+                    stmt = insert(ThsMember).values(rows)
+                    stmt = stmt.on_conflict_do_nothing(index_elements=["ts_code", "con_code"])
+                    db.execute(stmt)
+
+                count += len(rows)
+                if idx % 50 == 0:
+                    db.commit()
+                    _log(f"      ths_member 进度: {idx}/{len(codes)}, 累计 {count} 条")
+            except Exception as exc:
+                _log(f"[sync_ths_member] failed for {ts_code}: {exc}")
+                db.rollback()
+                continue
+
+        db.commit()
+        _log(f"      ths_member 完成: 累计 {count} 条")
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
 # 全量同步入口
 # ---------------------------------------------------------------------------
 
@@ -861,4 +1480,14 @@ def sync_all(years: int = 10) -> dict:
     results["fina_indicator"] = sync_fina_indicator(years=years)
     results["sector_moneyflow_industry"] = sync_sector_moneyflow("industry")
     results["sector_moneyflow_concept"] = sync_sector_moneyflow("concept")
+    results["stock_moneyflow"] = sync_stock_moneyflow()
+    results["moneyflow_hsgt"] = sync_moneyflow_hsgt()
+    results["index_basic"] = sync_index_basic()
+    results["index_daily"] = sync_index_daily()
+    results["stock_limit"] = sync_stock_limit()
+    results["top_list"] = sync_top_list()
+    results["top_inst"] = sync_top_inst()
+    results["ths_index"] = sync_ths_index()
+    results["ths_daily"] = sync_ths_daily()
+    results["ths_member"] = sync_ths_member()
     return results

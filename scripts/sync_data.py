@@ -21,9 +21,19 @@ def _log(message: str):
 from app.services.data_sync_service import (
     sync_daily_basic,
     sync_fina_indicator,
+    sync_index_basic,
+    sync_index_daily,
     sync_klines,
+    sync_moneyflow_hsgt,
     sync_sector_moneyflow,
     sync_stock_basic,
+    sync_stock_limit,
+    sync_stock_moneyflow,
+    sync_ths_daily,
+    sync_ths_index,
+    sync_ths_member,
+    sync_top_inst,
+    sync_top_list,
 )
 
 
@@ -48,6 +58,12 @@ def main():
         default="industry,concept",
         help="同步哪些板块资金流类型，逗号分隔，默认 industry,concept",
     )
+    parser.add_argument("--skip-stock-moneyflow", action="store_true", help="跳过同步个股资金流向")
+    parser.add_argument("--skip-moneyflow-hsgt", action="store_true", help="跳过同步沪深港通资金流向")
+    parser.add_argument("--skip-index", action="store_true", help="跳过同步指数基础信息+日线")
+    parser.add_argument("--skip-stock-limit", action="store_true", help="跳过同步涨跌停")
+    parser.add_argument("--skip-top-list", action="store_true", help="跳过同步龙虎榜")
+    parser.add_argument("--skip-ths", action="store_true", help="跳过同步同花顺指数")
     args = parser.parse_args()
 
     codes = None
@@ -104,6 +120,62 @@ def main():
             count = sync_sector_moneyflow(sector_type=sector_type)
             results[f"sector_moneyflow_{sector_type}"] = count
             _log(f"      完成，共 {count} 条")
+
+    if not args.skip_stock_moneyflow:
+        _log("[6] 同步个股资金流向...")
+        count = sync_stock_moneyflow()
+        results["stock_moneyflow"] = count
+        _log(f"      完成，共 {count} 条")
+
+    if not args.skip_moneyflow_hsgt:
+        _log("[7] 同步沪深港通资金流向...")
+        count = sync_moneyflow_hsgt()
+        results["moneyflow_hsgt"] = count
+        _log(f"      完成，共 {count} 条")
+
+    if not args.skip_index:
+        _log("[8] 同步指数基础信息...")
+        count = sync_index_basic()
+        results["index_basic"] = count
+        _log(f"      完成，共 {count} 条")
+
+        _log("[9] 同步指数日线...")
+        count = sync_index_daily()
+        results["index_daily"] = count
+        _log(f"      完成，共 {count} 条")
+
+    if not args.skip_stock_limit:
+        _log("[10] 同步涨跌停...")
+        count = sync_stock_limit()
+        results["stock_limit"] = count
+        _log(f"      完成，共 {count} 条")
+
+    if not args.skip_top_list:
+        _log("[11] 同步龙虎榜...")
+        count = sync_top_list()
+        results["top_list"] = count
+        _log(f"      完成，共 {count} 条")
+
+        _log("[12] 同步龙虎榜机构...")
+        count = sync_top_inst()
+        results["top_inst"] = count
+        _log(f"      完成，共 {count} 条")
+
+    if not args.skip_ths:
+        _log("[13] 同步同花顺指数基础信息...")
+        count = sync_ths_index()
+        results["ths_index"] = count
+        _log(f"      完成，共 {count} 条")
+
+        _log("[14] 同步同花顺指数日线...")
+        count = sync_ths_daily()
+        results["ths_daily"] = count
+        _log(f"      完成，共 {count} 条")
+
+        _log("[15] 同步同花顺指数成分股...")
+        count = sync_ths_member()
+        results["ths_member"] = count
+        _log(f"      完成，共 {count} 条")
 
     _log("\n同步结果：")
     for key, value in results.items():

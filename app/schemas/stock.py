@@ -7,6 +7,7 @@ class StockData(BaseModel):
     name: str
     price: float
     change_percent: float
+    pre_close: Optional[float] = None
     updated_at: str
 
 
@@ -44,6 +45,20 @@ class KlineData(BaseModel):
     close: float
     volume: Optional[float]
     amount: Optional[float]
+
+
+class IntradayKlineData(BaseModel):
+    """分时 K 线数据（分钟级）"""
+
+    ts_code: str
+    datetime: str
+    period: str  # 1/5/15/30/60
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: Optional[float] = None
+    amount: Optional[float] = None
 
 
 class DailyBasicData(BaseModel):
@@ -124,3 +139,129 @@ class SectorMoneyflowTrendResponse(BaseModel):
     end_date: str
     dates: list[str]
     series: list[SectorMoneyflowSeries]
+
+
+class StockMoneyflowData(BaseModel):
+    """个股资金流向数据"""
+
+    ts_code: str
+    trade_date: str
+    buy_sm_amount: Optional[float] = None
+    sell_sm_amount: Optional[float] = None
+    buy_md_amount: Optional[float] = None
+    sell_md_amount: Optional[float] = None
+    buy_lg_amount: Optional[float] = None
+    sell_lg_amount: Optional[float] = None
+    buy_elg_amount: Optional[float] = None
+    sell_elg_amount: Optional[float] = None
+    net_mf_amount: Optional[float] = None
+
+
+class MoneyflowHsgtData(BaseModel):
+    """沪深港通资金流向数据"""
+
+    trade_date: str
+    ggt_ss: Optional[float] = None
+    ggt_sz: Optional[float] = None
+    hgt: Optional[float] = None
+    sgt: Optional[float] = None
+    north_money: Optional[float] = None
+    south_money: Optional[float] = None
+
+
+class IndexBasicData(BaseModel):
+    """指数基础信息"""
+
+    ts_code: str
+    name: Optional[str] = None
+    market: Optional[str] = None
+    category: Optional[str] = None
+    base_date: Optional[str] = None
+    base_point: Optional[float] = None
+
+
+class IndexDailyData(BaseModel):
+    """指数日线数据"""
+
+    ts_code: str
+    trade_date: str
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: Optional[float] = None
+    pre_close: Optional[float] = None
+    change: Optional[float] = None
+    pct_chg: Optional[float] = None
+    vol: Optional[float] = None
+    amount: Optional[float] = None
+
+
+class StockLimitData(BaseModel):
+    """涨跌停数据"""
+
+    trade_date: str
+    ts_code: str
+    up_limit: Optional[float] = None
+    down_limit: Optional[float] = None
+
+
+class TopListData(BaseModel):
+    """龙虎榜每日明细"""
+
+    trade_date: str
+    ts_code: str
+    name: Optional[str] = None
+    close: Optional[float] = None
+    pct_change: Optional[float] = None
+    turnover_rate: Optional[float] = None
+    amount: Optional[float] = None
+    net_amount: Optional[float] = None
+    net_rate: Optional[float] = None
+    reason: Optional[str] = None
+
+
+class TopInstData(BaseModel):
+    """龙虎榜机构明细"""
+
+    trade_date: str
+    ts_code: str
+    exalter: Optional[str] = None
+    buy: Optional[float] = None
+    buy_rate: Optional[float] = None
+    sell: Optional[float] = None
+    sell_rate: Optional[float] = None
+    net_buy: Optional[float] = None
+    side: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class ThsIndexData(BaseModel):
+    """同花顺指数基础信息"""
+
+    ts_code: str
+    name: Optional[str] = None
+    count: Optional[int] = None
+    type: Optional[str] = None
+
+
+class ThsDailyData(BaseModel):
+    """同花顺指数日线"""
+
+    ts_code: str
+    trade_date: str
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    close: Optional[float] = None
+    pre_close: Optional[float] = None
+    pct_change: Optional[float] = None
+    vol: Optional[float] = None
+    turnover_rate: Optional[float] = None
+
+
+class ThsMemberData(BaseModel):
+    """同花顺指数成分股"""
+
+    ts_code: str
+    con_code: str
+    con_name: Optional[str] = None

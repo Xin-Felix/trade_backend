@@ -10,7 +10,7 @@
 
 ## 本地 Python 环境
 
-需要本地安装 PostgreSQL + TimescaleDB。
+需要本地安装 PostgreSQL + TimescaleDB 和 Redis。
 
 ```bash
 cd /Users/huangxin/Desktop/trade/trade_backend
@@ -21,6 +21,19 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 访问：http://127.0.0.1:8000/docs
+
+## Redis 配置
+
+Redis 用于缓存实时分时 K 线等热数据，通过环境变量 `REDIS_URL` 配置：
+
+```bash
+# .env
+REDIS_URL=redis://127.0.0.1:6379/0
+```
+
+- 已配置 `REDIS_URL` 时，数据写入 Redis，默认缓存 30 秒。
+- 未配置 `REDIS_URL` 时，自动降级为本地内存缓存（带 TTL），不影响接口使用。
+- Docker Compose 已内置 Redis 服务，容器内地址为 `redis://redis:6379/0`。
 
 ## 目录结构
 

@@ -20,6 +20,12 @@ _HYPERTABLES = [
     "stock_weekly",
     "stock_monthly",
     "stock_daily_basic",
+    "stock_moneyflow",
+    "index_daily",
+    "stock_limit",
+    "top_list",
+    "top_inst",
+    "ths_daily",
 ]
 
 
