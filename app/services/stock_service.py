@@ -943,6 +943,44 @@ def get_top_inst(trade_date: str | None = None, ts_code: str | None = None, limi
 
 
 # ---------------------------------------------------------------------------
+# 股票概念/题材
+# ---------------------------------------------------------------------------
+
+
+def get_stock_concepts(code: str) -> list[dict]:
+    """获取某只股票所属的全部概念/题材板块。"""
+    from app.models.stock import StockConcept
+
+    ts_code = _normalize_code(code)
+    db = SessionLocal()
+    try:
+        rows = (
+            db.execute(
+                select(StockConcept)
+                .where(StockConcept.ts_code == ts_code)
+                .where(StockConcept.out_date.is_(None))  # 只取当前有效的
+                .order_by(StockConcept.in_date.desc())
+            )
+            .scalars()
+            .all()
+        )
+
+        return [
+            {
+                "concept_id": r.concept_id,
+                "concept_name": r.concept_name,
+                "ts_code": r.ts_code,
+                "name": r.name,
+                "in_date": r.in_date.strftime("%Y%m%d") if r.in_date else None,
+                "out_date": r.out_date.strftime("%Y%m%d") if r.out_date else None,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Mock 数据（开发环境无 Tushare token 时使用）
 # ---------------------------------------------------------------------------
 

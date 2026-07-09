@@ -596,5 +596,29 @@ class ThsMember(Base):
     )
 
 
+class StockConcept(Base):
+    """股票概念/题材映射表（Tushare concept_detail）
+
+    记录每只股票属于哪些概念板块，方便通过 stock code 查询其所有概念题材。
+    """
+
+    __tablename__ = "stock_concept"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    concept_id = Column(String(20), nullable=False, comment="概念ID，如 TS500")
+    concept_name = Column(String(100), nullable=False, comment="概念名称")
+    ts_code = Column(String(20), nullable=False, comment="股票代码，如 000001.SZ")
+    name = Column(String(100), nullable=True, comment="股票名称")
+    in_date = Column(Date, nullable=True, comment="纳入日期")
+    out_date = Column(Date, nullable=True, comment="剔除日期")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("concept_id", "ts_code", name="uix_stock_concept"),
+    )
+
+
 # 兼容旧导入名称
 StockKline = StockDaily

@@ -13,5 +13,8 @@ class User(Base):
     email = Column(String(255), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=True)
     name = Column(String(255), nullable=True)
+    avatar = Column(String(500), nullable=True, comment="头像 URL")
+    role = Column(String(20), nullable=False, server_default="user", comment="角色: admin / user")
+    is_active = Column(Integer, nullable=False, server_default="1", comment="是否启用: 1=是 0=否")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)

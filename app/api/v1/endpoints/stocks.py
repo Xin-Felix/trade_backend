@@ -250,3 +250,12 @@ async def get_ths_member(
 ) -> list[ThsMemberData]:
     """获取同花顺指数成分股。"""
     return stock_service.get_ths_member(code, limit=limit)
+
+
+@router.get("/concepts/{code}")
+async def get_stock_concepts(
+    code: str,
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    """获取某只股票所属的全部概念/题材板块（用于复盘分析）。"""
+    return stock_service.get_stock_concepts(code)

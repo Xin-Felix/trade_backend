@@ -9,7 +9,10 @@ from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.base import Base, SessionLocal, engine
 from app.models.user import User as UserModel
+from app.services.admin_seed import seed_admin_menus
 from app.services.auth_service import create_user
+from app.services.datasource_seed import seed_data_sources
+from app.services.scheduler_seed import seed_scheduler_jobs
 
 # 导入所有模型，确保 Base.metadata 能创建表
 import app.models  # noqa: F401
@@ -62,11 +65,20 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     _ensure_timescale_hypertables()
 
+    # 启动定时调度器
+    from app.services.scheduler_service import shutdown_scheduler, start_scheduler
+    start_scheduler()
+
     # 开发环境初始化测试账号，方便 iOS 端快速验证
     db = SessionLocal()
     try:
         try:
             create_user(db, email="1538933906@qq.com", password="123456", name="Test User")
+            # 将测试用户设为管理员
+            user = db.query(UserModel).filter(UserModel.email == "1538933906@qq.com").first()
+            if user is not None:
+                user.role = "admin"
+                db.commit()
         except ValueError as exc:
             if "邮箱已存在" not in str(exc):
                 raise
@@ -74,11 +86,24 @@ async def lifespan(app: FastAPI):
             user = db.query(UserModel).filter(UserModel.email == "1538933906@qq.com").first()
             if user is not None:
                 user.hashed_password = get_password_hash("123456")
+                user.role = "admin"
                 db.commit()
+
+        # 初始化后台管理菜单数据
+        seed_admin_menus(db)
+
+        # 初始化定时任务配置
+        seed_scheduler_jobs(db)
+
+        # 初始化数据源注册表
+        seed_data_sources(db)
     finally:
         db.close()
 
     yield
+
+    # 关闭定时调度器
+    shutdown_scheduler()
 
 
 app = FastAPI(
