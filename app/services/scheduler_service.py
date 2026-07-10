@@ -572,8 +572,8 @@ def _config_to_dict(cfg) -> dict:
     }
 
 
-def get_job_logs(job_id: str = None, page: int = 1, page_size: int = 20) -> dict:
-    """获取任务执行日志（分页）。"""
+def get_job_logs(job_id: str = None, status: str = None, page: int = 1, page_size: int = 30) -> dict:
+    """获取任务执行日志（分页，支持 job_id 和 status 筛选）。"""
     from app.db.base import SessionLocal
     from app.models.scheduler_log import SchedulerLog
 
@@ -582,6 +582,8 @@ def get_job_logs(job_id: str = None, page: int = 1, page_size: int = 20) -> dict
         query = db.query(SchedulerLog)
         if job_id:
             query = query.filter(SchedulerLog.job_id == job_id)
+        if status:
+            query = query.filter(SchedulerLog.status == status)
 
         total = query.count()
         logs = (

@@ -128,10 +128,11 @@ async def delete_job(
 @router.get("/logs")
 async def list_job_logs(
     job_id: str = Query("", description="按任务ID筛选"),
+    status: str = Query("", description="按状态筛选: success/failed/running"),
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    page_size: int = Query(30, ge=1, le=100),
     user: User = Depends(get_current_user),
 ) -> dict:
     """获取任务执行日志（分页，按时间倒序）。"""
-    data = get_job_logs(job_id=job_id or None, page=page, page_size=page_size)
+    data = get_job_logs(job_id=job_id or None, status=status or None, page=page, page_size=page_size)
     return {"success": True, "data": data}

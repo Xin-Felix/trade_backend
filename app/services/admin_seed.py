@@ -125,6 +125,18 @@ _SEED_MENUS = [
         "menu_type": 1,
         "rank": 4,
     },
+    {
+        "id": 16,
+        "parent_id": 10,
+        "path": "/data/logs/index",
+        "name": "DataLogs",
+        "component": "data/logs/index",
+        "redirect": None,
+        "title": "执行日志",
+        "icon": "ep:document-checked",
+        "menu_type": 1,
+        "rank": 5,
+    },
 ]
 
 
