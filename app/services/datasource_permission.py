@@ -49,7 +49,7 @@ def check_permissions_async():
                     ds.has_permission = 0
                     ds.permission_msg = err_msg[:500]
                 else:
-                    # 其他错误（如参数缺失）通常说明有权限但参数不对
+                    # 其他错误（如必填参数缺失、参数校验失败）说明有权限但参数不对
                     ds.has_permission = 1
                     ds.permission_msg = f"可调用(参数报错): {err_msg[:200]}"
 

@@ -175,7 +175,9 @@ def job_sync_stock_limit(days: int = 1):
 
 
 def job_sync_all(days: int = 1):
-    """综合同步任务：日K线+日线因子+板块资金流+个股资金流+指数+沪深港通+涨跌停。"""
+    """综合同步任务：日K线+日线因子+板块资金流+个股资金流+指数+沪深港通+涨跌停+龙虎榜+同花顺。"""
+    from app.services.data_sync_service import sync_top_list, sync_top_inst, sync_ths_daily
+
     logger.info(f"[Scheduler] 开始综合同步，最近 {days} 天")
     job_sync_daily_kline(days)
     job_sync_daily_basic(days)
@@ -184,6 +186,29 @@ def job_sync_all(days: int = 1):
     job_sync_index_daily(days)
     job_sync_moneyflow_hsgt(days)
     job_sync_stock_limit(days)
+
+    # 龙虎榜
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+    try:
+        sync_top_list(start_date=start_date, end_date=end_date)
+        logger.info("[Scheduler] 龙虎榜同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 龙虎榜同步失败: {e}")
+
+    try:
+        sync_top_inst(start_date=start_date, end_date=end_date)
+        logger.info("[Scheduler] 龙虎榜机构同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 龙虎榜机构同步失败: {e}")
+
+    # 同花顺板块行情
+    try:
+        sync_ths_daily(start_date=start_date, end_date=end_date)
+        logger.info("[Scheduler] 同花顺板块行情同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 同花顺板块行情同步失败: {e}")
+
     logger.info("[Scheduler] 综合同步完成")
 
 
@@ -290,22 +315,25 @@ JOB_REGISTRY: dict[str, callable] = {
 }
 
 JOB_DESCRIPTIONS: dict[str, str] = {
-    # 原有任务
-    "sync_daily_kline": "同步日K线数据",
-    "sync_daily_basic": "同步日线因子（PE/PB/换手率等）",
-    "sync_sector_moneyflow": "同步板块资金流（行业+概念）",
-    "sync_stock_moneyflow": "同步个股资金流",
-    "sync_index_daily": "同步指数日线行情",
-    "sync_moneyflow_hsgt": "同步沪深港通资金流",
-    "sync_stock_limit": "同步涨跌停数据",
-    "sync_all": "综合同步（包含以上全部）",
-    # 分析数据任务
-    "sync_limit_data": "打板数据（涨跌停+连板天梯+THS榜单）",
-    "sync_concept_hot": "题材热点（DC概念+THS热榜+DC热榜）",
-    "sync_institution": "机构行为（北向持仓+股东人数+增减持+筹码+两融）",
-    "sync_research": "研报数据（券商金股+盈利预测）",
-    "sync_macro": "宏观数据（指数估值+申万行业+CPI+PMI+LPR+社融）",
-    "sync_etf_cb": "ETF和可转债数据（基础信息+份额+行情）",
+    # 盘后核心（16:00-17:30）
+    "sync_daily_kline": "[盘后] 日K线行情",
+    "sync_daily_basic": "[盘后] 日线因子（PE/PB/换手率/市值）",
+    "sync_stock_moneyflow": "[盘后] 个股资金流向",
+    "sync_sector_moneyflow": "[盘后] 板块资金流（行业+概念）",
+    "sync_index_daily": "[盘后] 指数日线行情",
+    "sync_moneyflow_hsgt": "[盘后] 沪深港通资金流向",
+    "sync_stock_limit": "[盘后] 涨跌停数据",
+    "sync_limit_data": "[盘后] 打板数据（涨跌停+连板天梯+THS榜单）",
+    "sync_concept_hot": "[盘后] 题材热点（DC概念+THS热榜+DC热榜）",
+    # 每日延后（18:00-20:00）
+    "sync_etf_cb": "[每日] ETF+可转债（基础信息+份额+行情）",
+    "sync_research": "[每日] 研报数据（券商金股+盈利预测）",
+    # 每周（周六）
+    "sync_institution": "[每周] 机构行为（北向持仓+股东人数+增减持+筹码+两融）",
+    # 每月（1号）
+    "sync_macro": "[每月] 宏观数据（指数估值+申万行业+CPI+PMI+LPR+社融+指数权重）",
+    # 综合
+    "sync_all": "[综合] 盘后全量同步（K线+资金+龙虎榜+板块+指数）",
 }
 
 

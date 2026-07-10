@@ -1,7 +1,7 @@
 """数据源注册表种子数据。
 
-启动时将所有 Tushare 接口信息写入 data_sources 表（按 api_name 检查，已存在跳过）。
-包含接口名、中文名、分类、描述、代理路径、文档链接、是否有本地表等。
+启动时将所有接口信息写入 data_sources 表（按 provider + api_name 检查，已存在跳过）。
+支持多 provider：Tushare / AKShare / 自定义。
 """
 
 from sqlalchemy.orm import Session
@@ -9,7 +9,12 @@ from sqlalchemy.orm import Session
 from app.models.data_source import DataSource
 
 
-_SEED_DATA = [
+# ============================================================
+# Tushare 数据源种子
+# 格式: (api_name, title, category, description, proxy_path, doc_url, has_local_table, local_table_name)
+# ============================================================
+
+_TUSHARE_SEED_DATA = [
     # ====== ETF 专题 ======
     ("etf_basic", "ETF基本信息", "ETF专题", "获取国内ETF基础信息", "/api/v1/ts/etf-basic", "https://tushare.pro/wctapi/documents/385.md", 0, None),
     ("etf_index", "ETF跟踪指数", "ETF专题", "获取ETF基准指数列表信息", "/api/v1/ts/etf-index", "https://tushare.pro/wctapi/documents/386.md", 0, None),
@@ -270,15 +275,89 @@ _SEED_DATA = [
 ]
 
 
+# ============================================================
+# AKShare 数据源种子
+# 格式同 Tushare: (api_name, title, category, description, proxy_path, doc_url, has_local_table, local_table_name)
+# ============================================================
+
+_AKSHARE_SEED_DATA = [
+    # ====== A股实时行情 ======
+    ("stock_zh_a_minute", "A股分钟K线", "A股行情,分时数据", "获取A股分钟级别K线数据", "/api/v1/ak/stock-zh-a-minute", "https://akshare.akfamily.xyz/data/stock/stock.html#id4", 0, None),
+    ("stock_zh_a_hist", "A股历史行情", "A股行情,日线数据", "获取A股个股历史行情数据（前后复权）", "/api/v1/ak/stock-zh-a-hist", "https://akshare.akfamily.xyz/data/stock/stock.html#id1", 0, None),
+    ("stock_zh_a_spot_em", "A股实时行情(东财)", "A股行情,实时数据", "获取东方财富A股实时行情数据", "/api/v1/ak/stock-zh-a-spot-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id7", 0, None),
+    ("stock_zh_a_hist_min_em", "A股分时行情(东财)", "A股行情,分时数据", "获取东方财富A股分时行情数据", "/api/v1/ak/stock-zh-a-hist-min-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id8", 0, None),
+    # ====== 板块/概念 ======
+    ("stock_board_industry_name_em", "行业板块列表(东财)", "板块数据,行业板块", "获取东方财富行业板块名称列表", "/api/v1/ak/stock-board-industry-name-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id20", 0, None),
+    ("stock_board_industry_cons_em", "行业板块成分(东财)", "板块数据,行业板块", "获取东方财富行业板块成分股", "/api/v1/ak/stock-board-industry-cons-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id21", 0, None),
+    ("stock_board_concept_name_em", "概念板块列表(东财)", "板块数据,概念板块", "获取东方财富概念板块名称列表", "/api/v1/ak/stock-board-concept-name-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id22", 0, None),
+    ("stock_board_concept_cons_em", "概念板块成分(东财)", "板块数据,概念板块", "获取东方财富概念板块成分股", "/api/v1/ak/stock-board-concept-cons-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id23", 0, None),
+    # ====== 资金流向 ======
+    ("stock_individual_fund_flow", "个股资金流向", "资金流向,个股", "获取个股资金流向数据", "/api/v1/ak/stock-individual-fund-flow", "https://akshare.akfamily.xyz/data/stock/stock.html#id30", 0, None),
+    ("stock_market_fund_flow", "大盘资金流向", "资金流向,大盘", "获取大盘资金流向数据", "/api/v1/ak/stock-market-fund-flow", "https://akshare.akfamily.xyz/data/stock/stock.html#id31", 0, None),
+    ("stock_sector_fund_flow_rank", "板块资金流排名", "资金流向,板块", "获取板块资金流排名", "/api/v1/ak/stock-sector-fund-flow-rank", "https://akshare.akfamily.xyz/data/stock/stock.html#id32", 0, None),
+    # ====== 龙虎榜 ======
+    ("stock_lhb_detail_em", "龙虎榜详情(东财)", "龙虎榜,详情", "获取东方财富龙虎榜详情数据", "/api/v1/ak/stock-lhb-detail-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id40", 0, None),
+    ("stock_lhb_stock_statistic_em", "龙虎榜个股统计(东财)", "龙虎榜,统计", "获取龙虎榜个股上榜统计", "/api/v1/ak/stock-lhb-stock-statistic-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id41", 0, None),
+    # ====== 北向资金/港股通 ======
+    ("stock_hsgt_north_net_flow_in_em", "北向资金净流入(东财)", "北向资金,净流入", "获取北向资金净流入数据", "/api/v1/ak/stock-hsgt-north-net-flow-in-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id50", 0, None),
+    ("stock_hsgt_north_acc_flow_in_em", "北向资金累计流入(东财)", "北向资金,累计", "获取北向资金累计流入数据", "/api/v1/ak/stock-hsgt-north-acc-flow-in-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id51", 0, None),
+    ("stock_hsgt_hold_stock_em", "北向持股明细(东财)", "北向资金,持股", "获取北向资金持股数据", "/api/v1/ak/stock-hsgt-hold-stock-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id52", 0, None),
+    # ====== 宏观经济 ======
+    ("macro_china_cpi", "中国CPI", "宏观经济,价格指数", "获取中国居民消费价格指数(CPI)", "/api/v1/ak/macro-china-cpi", "https://akshare.akfamily.xyz/data/macro/macro.html#id1", 0, None),
+    ("macro_china_ppi", "中国PPI", "宏观经济,价格指数", "获取中国工业品出厂价格指数(PPI)", "/api/v1/ak/macro-china-ppi", "https://akshare.akfamily.xyz/data/macro/macro.html#id2", 0, None),
+    ("macro_china_gdp", "中国GDP", "宏观经济,国民经济", "获取中国国内生产总值数据", "/api/v1/ak/macro-china-gdp", "https://akshare.akfamily.xyz/data/macro/macro.html#id3", 0, None),
+    ("macro_china_pmi", "中国PMI", "宏观经济,景气度", "获取中国采购经理指数(PMI)", "/api/v1/ak/macro-china-pmi", "https://akshare.akfamily.xyz/data/macro/macro.html#id4", 0, None),
+    ("macro_china_money_supply", "货币供应量", "宏观经济,货币供应量", "获取中国货币供应量数据", "/api/v1/ak/macro-china-money-supply", "https://akshare.akfamily.xyz/data/macro/macro.html#id5", 0, None),
+    # ====== 新闻/舆情 ======
+    ("stock_news_em", "个股新闻(东财)", "新闻舆情,个股", "获取东方财富个股新闻数据", "/api/v1/ak/stock-news-em", "https://akshare.akfamily.xyz/data/stock/stock.html#id60", 0, None),
+    ("news_cctv", "新闻联播文字稿", "新闻舆情,宏观", "获取新闻联播文字稿", "/api/v1/ak/news-cctv", "https://akshare.akfamily.xyz/data/others/others.html#id1", 0, None),
+    # ====== 可转债 ======
+    ("bond_cb_jsl", "可转债实时数据(集思录)", "可转债,实时数据", "获取集思录可转债实时数据", "/api/v1/ak/bond-cb-jsl", "https://akshare.akfamily.xyz/data/bond/bond.html#id1", 0, None),
+    ("bond_cb_redeem_jsl", "可转债强赎(集思录)", "可转债,强赎", "获取集思录可转债强赎数据", "/api/v1/ak/bond-cb-redeem-jsl", "https://akshare.akfamily.xyz/data/bond/bond.html#id2", 0, None),
+]
+
+
 def seed_data_sources(db: Session) -> None:
-    """将所有数据源信息写入数据库（按 api_name 检查，已存在跳过）。"""
-    for row in _SEED_DATA:
+    """将所有数据源信息写入数据库。
+
+    按 (provider, api_name) 检查，已存在跳过。
+    支持多 provider 的种子数据。
+    """
+    # Tushare 数据源
+    for row in _TUSHARE_SEED_DATA:
         api_name = row[0]
-        existing = db.query(DataSource).filter(DataSource.api_name == api_name).first()
+        existing = db.query(DataSource).filter(
+            DataSource.provider == "tushare",
+            DataSource.api_name == api_name,
+        ).first()
         if existing:
             continue
 
         ds = DataSource(
+            provider="tushare",
+            api_name=row[0],
+            title=row[1],
+            category=row[2],
+            description=row[3],
+            proxy_path=row[4],
+            doc_url=row[5],
+            has_local_table=row[6],
+            local_table_name=row[7],
+        )
+        db.add(ds)
+
+    # AKShare 数据源
+    for row in _AKSHARE_SEED_DATA:
+        api_name = row[0]
+        existing = db.query(DataSource).filter(
+            DataSource.provider == "akshare",
+            DataSource.api_name == api_name,
+        ).first()
+        if existing:
+            continue
+
+        ds = DataSource(
+            provider="akshare",
             api_name=row[0],
             title=row[1],
             category=row[2],
@@ -292,10 +371,18 @@ def seed_data_sources(db: Session) -> None:
 
     # 修正本地表标记（覆盖已有记录）
     for api_name, table_name in _LOCAL_TABLE_MAP.items():
-        ds = db.query(DataSource).filter(DataSource.api_name == api_name).first()
+        ds = db.query(DataSource).filter(
+            DataSource.provider == "tushare",
+            DataSource.api_name == api_name,
+        ).first()
         if ds and (ds.has_local_table != 1 or ds.local_table_name != table_name):
             ds.has_local_table = 1
             ds.local_table_name = table_name
+
+    # 给老数据补 provider 字段（兼容存量数据）
+    legacy = db.query(DataSource).filter(DataSource.provider.is_(None)).all()
+    for ds in legacy:
+        ds.provider = "tushare"
 
     db.commit()
 

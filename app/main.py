@@ -107,9 +107,46 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title=settings.app_name,
-    description="个人信息仪表盘后端服务",
-    version="0.1.0",
+    title="盈多多 Ying+ API",
+    description="""盈多多（Ying+）AI 投资工作台后端服务。
+
+## 主要模块
+
+### 认证 (Auth)
+- 邮箱验证码登录/注册
+- Apple Sign In
+- 用户信息查询与修改
+
+### 数据源管理 (DataSource)
+- 多 Provider 数据源注册（Tushare / AKShare / 自定义）
+- 接口权限检测
+- 分类概览与统计
+
+### 数据同步 (Sync)
+- 日K线、日线因子、板块资金流
+- 龙虎榜、同花顺板块
+- 北向资金、涨跌停
+- 概念映射
+
+### 调度管理 (Scheduler)
+- 定时任务配置（Cron / Interval）
+- 任务执行日志
+- 手动触发
+
+### 股票 (Stocks)
+- 个股行情、分时K线
+- 所属板块、概念映射
+- 资金流向
+
+### Tushare 代理 (Tushare Proxy)
+- 200+ 接口透传代理
+- 统一鉴权与限流
+
+### 数据浏览 (Data Browser)
+- 本地数据表查询
+- 任意表分页浏览
+""",
+    version="1.0.0",
     lifespan=lifespan,
 )
 

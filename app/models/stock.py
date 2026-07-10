@@ -491,6 +491,7 @@ class TopList(Base):
 
     trade_date = Column(Date, primary_key=True, comment="交易日期")
     ts_code = Column(String(20), primary_key=True, comment="Tushare 代码")
+    reason = Column(String(255), primary_key=True, comment="上榜原因")
 
     name = Column(String(100), nullable=True, comment="股票名称")
     close = Column(Numeric(20, 4), nullable=True, comment="收盘价")
@@ -504,14 +505,9 @@ class TopList(Base):
     net_rate = Column(Numeric(20, 4), nullable=True, comment="净占比")
     amount_rate = Column(Numeric(20, 4), nullable=True, comment="成交额占比")
     float_values = Column(Numeric(20, 4), nullable=True, comment="流通市值")
-    reason = Column(String(255), nullable=True, comment="上榜原因")
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("trade_date", "ts_code", name="uix_top_list"),
-    )
 
 
 class TopInst(Base):
@@ -523,13 +519,13 @@ class TopInst(Base):
     ts_code = Column(String(20), primary_key=True, comment="Tushare 代码")
     exalter = Column(String(255), primary_key=True, comment="营业部名称")
     side = Column(String(10), primary_key=True, comment="0 卖，1 买")
+    reason = Column(String(255), primary_key=True, comment="上榜原因")
 
     buy = Column(Numeric(20, 4), nullable=True, comment="买入额")
     buy_rate = Column(Numeric(20, 4), nullable=True, comment="买入占总成交比例")
     sell = Column(Numeric(20, 4), nullable=True, comment="卖出额")
     sell_rate = Column(Numeric(20, 4), nullable=True, comment="卖出占总成交比例")
     net_buy = Column(Numeric(20, 4), nullable=True, comment="净买额")
-    reason = Column(String(255), nullable=True, comment="上榜原因")
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)

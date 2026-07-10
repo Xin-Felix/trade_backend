@@ -73,9 +73,17 @@ def _safe_upsert(db, model, records: list[dict], conflict_cols: list[str]):
     if not records:
         return 0
     # 去重：PostgreSQL ON CONFLICT 不允许同一 INSERT 语句中出现重复约束值
+    # 注意：NaN != NaN 在 Python 中为 True，会导致 dict 无法正确去重，
+    # 因此需要将 NaN 转为 None 后再构造 key
     seen = {}
     for r in records:
-        key = tuple(r.get(c) for c in conflict_cols)
+        key_parts = []
+        for c in conflict_cols:
+            v = r.get(c)
+            if isinstance(v, float) and pd.isna(v):
+                v = None
+            key_parts.append(v)
+        key = tuple(key_parts)
         seen[key] = r
     records = list(seen.values())
     if not records:
@@ -244,11 +252,17 @@ def sync_dc_concept(start_date: date = None, end_date: date = None, days: int = 
             if df is not None and not df.empty:
                 records = []
                 for _, row in df.iterrows():
-                    ts_code = row.get("theme_code") or row.get("ts_code")
-                    if not ts_code or pd.isna(ts_code):
+                    # 兼容不同版本字段名：theme_code / ts_code / code
+                    ts_code = None
+                    for col in ("theme_code", "ts_code", "code"):
+                        v = row.get(col)
+                        if v is not None and not pd.isna(v) and str(v).strip():
+                            ts_code = str(v).strip()
+                            break
+                    if not ts_code:
                         continue
                     records.append({
-                        "ts_code": str(ts_code),
+                        "ts_code": ts_code,
                         "trade_date": d,
                         "name": row.get("name"),
                         "z_num": row.get("z_t_num", row.get("z_num")),
@@ -388,6 +402,26 @@ def sync_hk_hold(start_date: date = None, end_date: date = None, days: int = 1):
         db.close()
 
 
+def _safe_numeric(val, max_digits: int = 12, decimal_places: int = 4):
+    """安全转换数值，防止 numeric out of range。
+
+    如果值超出 numeric(max_digits, decimal_places) 的范围，返回 None。
+    例如 numeric(12,4) 允许最大值为 99999999.9999（8位整数 + 4位小数）。
+    """
+    if val is None or pd.isna(val):
+        return None
+    try:
+        v = float(val)
+        # numeric(12,4) 最大允许 8 位整数部分，即整数部分 < 10^8
+        int_digits = max_digits - decimal_places
+        max_val = 10 ** int_digits  # e.g. 100000000 for numeric(12,4)
+        if abs(v) >= max_val:
+            return None
+        return round(v, decimal_places)
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
 def sync_stk_holdernumber(days: int = 30):
     """同步股东人数（不定期公布，默认拉最近30天）。"""
     pro = _get_pro()
@@ -409,9 +443,9 @@ def sync_stk_holdernumber(days: int = 30):
                     "ts_code": row.get("ts_code"),
                     "ann_date": pd.to_datetime(str(ann)).date(),
                     "end_date": pd.to_datetime(str(row.get("end_date"))).date() if row.get("end_date") else None,
-                    "holder_num": row.get("holder_num"),
-                    "holder_num_change": row.get("holder_num_change"),
-                    "holder_num_ratio": row.get("holder_num_ratio"),
+                    "holder_num": _safe_numeric(row.get("holder_num"), max_digits=20, decimal_places=0),
+                    "holder_num_change": _safe_numeric(row.get("holder_num_change"), max_digits=20, decimal_places=4),
+                    "holder_num_ratio": _safe_numeric(row.get("holder_num_ratio"), max_digits=12, decimal_places=4),
                 })
             _safe_upsert(db, StkHolderNumber, records, ["ts_code", "ann_date"])
             total = len(records)
@@ -603,16 +637,23 @@ def sync_report_rc(days: int = 3):
                 rd = row.get("report_date")
                 if pd.isna(rd) or not rd:
                     continue
+                ts_code = row.get("ts_code")
+                org_name = row.get("org_name")
+                # 跳过主键字段为空的行
+                if not ts_code or pd.isna(ts_code):
+                    continue
+                if not org_name or pd.isna(org_name):
+                    org_name = ""
                 records.append({
-                    "ts_code": row.get("ts_code"),
+                    "ts_code": str(ts_code).strip(),
                     "report_date": pd.to_datetime(str(rd)).date(),
-                    "org_name": str(row.get("org_name", ""))[:200],
-                    "name": row.get("name"),
-                    "rating": row.get("rating"),
-                    "target_price": row.get("target_price"),
-                    "target_price_change": row.get("target_price_change"),
-                    "eps_current": row.get("eps_current", row.get("eps2")),
-                    "eps_next": row.get("eps_next", row.get("eps3")),
+                    "org_name": str(org_name).strip()[:200],
+                    "name": row.get("name") if not pd.isna(row.get("name")) else None,
+                    "rating": row.get("rating") if not pd.isna(row.get("rating")) else None,
+                    "target_price": _safe_numeric(row.get("target_price"), 12, 4),
+                    "target_price_change": _safe_numeric(row.get("target_price_change"), 12, 4),
+                    "eps_current": _safe_numeric(row.get("eps_current", row.get("eps2")), 12, 4),
+                    "eps_next": _safe_numeric(row.get("eps_next", row.get("eps3")), 12, 4),
                 })
             # 去重：同一批数据里可能有重复的(ts_code, report_date, org_name)
             seen = {}
@@ -639,33 +680,43 @@ def sync_report_rc(days: int = 3):
 
 
 def sync_index_weight(days: int = 1):
-    """同步指数成分和权重（月度数据，拉取当月）。"""
+    """同步指数成分和权重（月度数据，拉取当月+上月）。
+
+    注意：Tushare 的 index_weight 是月度数据，当月数据可能月底才发布，
+    所以默认同时拉取上月和当月数据。
+    """
     pro = _get_pro()
-    # 用当月第一天和最后一天
     today = date.today()
-    start = today.replace(day=1)
-    end = (start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+
+    # 当月范围
+    cur_start = today.replace(day=1)
+    cur_end = (cur_start + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+
+    # 上月范围
+    prev_end = cur_start - timedelta(days=1)
+    prev_start = prev_end.replace(day=1)
 
     db = SessionLocal()
     total = 0
     try:
         for idx_code in ["000300.SH", "000905.SH", "000016.SH"]:  # 沪深300/中证500/上证50
-            df = pro.index_weight(index_code=idx_code, start_date=_date_str(start), end_date=_date_str(end))
-            time.sleep(0.5)
-            if df is not None and not df.empty:
-                records = []
-                for _, row in df.iterrows():
-                    td = row.get("trade_date")
-                    if pd.isna(td) or not td:
-                        continue
-                    records.append({
-                        "index_code": idx_code,
-                        "con_code": row.get("con_code"),
-                        "trade_date": pd.to_datetime(str(td)).date(),
-                        "weight": row.get("weight"),
-                    })
-                _safe_upsert(db, IndexWeight, records, ["index_code", "con_code", "trade_date"])
-                total += len(records)
+            for start, end in [(prev_start, prev_end), (cur_start, cur_end)]:
+                df = pro.index_weight(index_code=idx_code, start_date=_date_str(start), end_date=_date_str(end))
+                time.sleep(0.5)
+                if df is not None and not df.empty:
+                    records = []
+                    for _, row in df.iterrows():
+                        td = row.get("trade_date")
+                        if pd.isna(td) or not td:
+                            continue
+                        records.append({
+                            "index_code": idx_code,
+                            "con_code": row.get("con_code"),
+                            "trade_date": pd.to_datetime(str(td)).date(),
+                            "weight": row.get("weight"),
+                        })
+                    _safe_upsert(db, IndexWeight, records, ["index_code", "con_code", "trade_date"])
+                    total += len(records)
         db.commit()
         logger.info(f"[Sync] index_weight: {total} 条")
     except Exception as e:

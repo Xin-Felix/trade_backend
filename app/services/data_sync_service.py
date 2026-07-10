@@ -891,6 +891,13 @@ def _sync_by_trade_date(
 
             if rows:
                 pk_columns = [c.name for c in model.__table__.primary_key.columns]
+                # 按主键去重（同一批次 Tushare 可能返回完全重复的行）
+                seen = {}
+                for r in rows:
+                    key = tuple(r.get(c) for c in pk_columns)
+                    seen[key] = r
+                rows = list(seen.values())
+                pk_columns = [c.name for c in model.__table__.primary_key.columns]
                 stmt = insert(model).values(rows)
                 update_dict = {
                     c.name: stmt.excluded[c.name]
@@ -1210,9 +1217,11 @@ def _build_top_list_values(row) -> dict | None:
     trade_date = _parse_date(row.get("trade_date"))
     if trade_date is None:
         return None
+    reason = str(row.get("reason", "")) if row.get("reason") is not None else ""
     return {
         "trade_date": trade_date,
         "ts_code": str(row.get("ts_code", "")),
+        "reason": reason,
         "name": str(row.get("name", "")) if row.get("name") is not None else None,
         "close": _to_numeric(row.get("close")),
         "pct_change": _to_numeric(row.get("pct_change")),
@@ -1225,7 +1234,6 @@ def _build_top_list_values(row) -> dict | None:
         "net_rate": _to_numeric(row.get("net_rate")),
         "amount_rate": _to_numeric(row.get("amount_rate")),
         "float_values": _to_numeric(row.get("float_values")),
-        "reason": str(row.get("reason", "")) if row.get("reason") is not None else None,
     }
 
 
@@ -1264,17 +1272,18 @@ def _build_top_inst_values(row) -> dict | None:
     trade_date = _parse_date(row.get("trade_date"))
     if trade_date is None:
         return None
+    reason = str(row.get("reason", "")) if row.get("reason") is not None else ""
     return {
         "trade_date": trade_date,
         "ts_code": str(row.get("ts_code", "")),
-        "exalter": str(row.get("exalter", "")) if row.get("exalter") is not None else None,
+        "exalter": str(row.get("exalter", "")) if row.get("exalter") is not None else "",
+        "side": str(row.get("side", "")) if row.get("side") is not None else "",
+        "reason": reason,
         "buy": _to_numeric(row.get("buy")),
         "buy_rate": _to_numeric(row.get("buy_rate")),
         "sell": _to_numeric(row.get("sell")),
         "sell_rate": _to_numeric(row.get("sell_rate")),
         "net_buy": _to_numeric(row.get("net_buy")),
-        "side": str(row.get("side", "")) if row.get("side") is not None else None,
-        "reason": str(row.get("reason", "")) if row.get("reason") is not None else None,
     }
 
 

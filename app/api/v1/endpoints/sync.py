@@ -258,8 +258,7 @@ def _run_sync_concepts():
             concept_name = row["name"]
 
             try:
-                df_members = pro.ths_member(ts_code=concept_code,
-                    fields="ts_code,code,name")
+                df_members = pro.ths_member(ts_code=concept_code)
             except Exception as e:
                 logger.warning(f"sync_concepts: 拉取概念 {concept_code}({concept_name}) 成分失败: {e}")
                 time.sleep(0.3)
@@ -271,31 +270,47 @@ def _run_sync_concepts():
 
             records = []
             for _, member_row in df_members.iterrows():
-                con_code = member_row.get("code") or member_row.get("ts_code")
-                con_name = member_row.get("name")
-                if not con_code:
+                # ths_member 返回字段: ts_code(概念代码), con_code(成分股代码), con_name(成分股名称)
+                con_code = member_row.get("con_code")
+                if not con_code or str(con_code).strip() == "" or con_code == concept_code:
                     continue
+                con_code = str(con_code).strip()
+                con_name = member_row.get("con_name")
+                if con_name and not isinstance(con_name, str):
+                    con_name = str(con_name)
                 records.append({
                     "concept_id": concept_code,
                     "concept_name": concept_name,
                     "ts_code": con_code,
-                    "name": con_name,
+                    "name": con_name if con_name else None,
                     "in_date": None,
                     "out_date": None,
                 })
 
+            # 按唯一键去重（同一批可能有重复）
             if records:
-                stmt = insert(StockConcept.__table__).values(records)
-                stmt = stmt.on_conflict_do_update(
-                    constraint="uix_stock_concept",
-                    set_={
-                        "concept_name": stmt.excluded.concept_name,
-                        "name": stmt.excluded.name,
-                    }
-                )
-                db.execute(stmt)
-                db.commit()
-                total_inserted += len(records)
+                seen = {}
+                for r in records:
+                    key = (r["concept_id"], r["ts_code"])
+                    seen[key] = r
+                records = list(seen.values())
+
+            if records:
+                try:
+                    stmt = insert(StockConcept.__table__).values(records)
+                    stmt = stmt.on_conflict_do_update(
+                        constraint="uix_stock_concept",
+                        set_={
+                            "concept_name": stmt.excluded.concept_name,
+                            "name": stmt.excluded.name,
+                        }
+                    )
+                    db.execute(stmt)
+                    db.commit()
+                    total_inserted += len(records)
+                except Exception as e:
+                    db.rollback()
+                    logger.warning(f"sync_concepts: 插入概念 {concept_code} 失败: {str(e)[:100]}")
 
             # Tushare 限流
             time.sleep(0.35)
@@ -395,7 +410,7 @@ async def get_sync_status(
                     if latest_date:
                         latest_date = str(latest_date)
 
-                # 查最后更新时间
+                # 查最后更新时间（部分表可能没有 updated_at/created_at 列）
                 last_updated = None
                 try:
                     last_updated = db.execute(
@@ -404,6 +419,7 @@ async def get_sync_status(
                     if last_updated:
                         last_updated = last_updated.strftime("%Y-%m-%d %H:%M")
                 except Exception:
+                    db.rollback()
                     try:
                         last_updated = db.execute(
                             text(f"SELECT MAX(created_at) FROM {tbl}")
@@ -411,7 +427,7 @@ async def get_sync_status(
                         if last_updated:
                             last_updated = last_updated.strftime("%Y-%m-%d %H:%M")
                     except Exception:
-                        pass
+                        db.rollback()
 
                 results.append({
                     "table": tbl,
@@ -422,6 +438,7 @@ async def get_sync_status(
                     "last_updated": last_updated,
                 })
             except Exception:
+                db.rollback()
                 results.append({
                     "table": tbl,
                     "title": cfg["title"],

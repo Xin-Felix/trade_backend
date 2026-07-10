@@ -48,4 +48,4 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found"
         )
 
-    return User(id=user.public_id, email=user.email, name=user.name)
+    return User(id=user.public_id, email=user.email, name=user.name, avatar=user.avatar)
