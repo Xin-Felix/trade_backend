@@ -220,6 +220,55 @@ class TopListData(BaseModel):
     reason: Optional[str] = None
 
 
+class TopListResponse(BaseModel):
+    """龙虎榜分页响应"""
+
+    items: list[TopListData]
+    total: int
+    limit: int
+    offset: int
+
+
+class LimitUpConceptTag(BaseModel):
+    """涨停概念板块标签"""
+
+    name: str
+    count: Optional[int] = None
+    cons_count: Optional[int] = None
+    pct_change: Optional[float] = None
+    rank: Optional[int] = None
+
+
+class LimitUpStockItem(BaseModel):
+    """涨停天梯个股"""
+
+    ts_code: str
+    name: Optional[str] = None
+    close: Optional[float] = None
+    pct_chg: Optional[float] = None
+    first_time: Optional[str] = None
+    last_time: Optional[str] = None
+    open_times: Optional[int] = None
+    concept_tags: list[str] = []
+
+
+class LimitUpLadderGroup(BaseModel):
+    """连板分组"""
+
+    step: int
+    label: str
+    stocks: list[LimitUpStockItem]
+
+
+class LimitUpLadderResponse(BaseModel):
+    """涨停板天梯聚合响应"""
+
+    trade_date: str
+    concept_tags: list[LimitUpConceptTag]
+    ladder: list[LimitUpLadderGroup]
+    opened_limit: list[LimitUpStockItem]
+
+
 class TopInstData(BaseModel):
     """龙虎榜机构明细"""
 

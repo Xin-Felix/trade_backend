@@ -90,6 +90,27 @@ class LimitListThs(Base):
     )
 
 
+class LimitCptList(Base):
+    """涨停最强板块统计（同花顺概念）"""
+
+    __tablename__ = "limit_cpt_list"
+
+    ts_code = Column(String(20), primary_key=True, comment="板块代码")
+    trade_date = Column(Date, primary_key=True, comment="交易日期")
+    name = Column(String(100), nullable=True, comment="概念名称")
+    days = Column(Integer, nullable=True, comment="持续天数")
+    up_stat = Column(String(50), nullable=True, comment="涨停状态")
+    cons_nums = Column(Integer, nullable=True, comment="连板家数")
+    up_nums = Column(Integer, nullable=True, comment="涨停家数")
+    pct_chg = Column(Numeric(12, 4), nullable=True, comment="板块涨跌幅")
+    rank = Column(Integer, nullable=True, comment="排名")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("ts_code", "trade_date", name="uix_limit_cpt_list"),
+    )
+
+
 class DcConcept(Base):
     """DC概念题材列表"""
 

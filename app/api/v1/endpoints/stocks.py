@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends, Query
 
 from app.core.dependencies import get_current_user
@@ -7,6 +9,7 @@ from app.schemas.stock import (
     IndexData,
     IntradayKlineData,
     KlineData,
+    LimitUpLadderResponse,
     MoneyflowHsgtData,
     SectorMoneyflowRankResponse,
     SectorMoneyflowTrendResponse,
@@ -20,10 +23,11 @@ from app.schemas.stock import (
     ThsMemberData,
     TopInstData,
     TopListData,
+    TopListResponse,
 )
 from app.schemas.user import User
 from app.schemas.watchlist import WatchlistAddRequest, WatchlistItem, WatchlistResponse
-from app.services import stock_service, watchlist_service
+from app.services import limit_up_service, stock_service, watchlist_service
 
 router = APIRouter()
 
@@ -77,16 +81,23 @@ async def get_klines(
 async def get_intraday_klines(
     code: str,
     period: str = Query("1", pattern="^(1|5|15|30|60)$"),
-    limit: int = Query(240, ge=1, le=1000),
+    trade_date: Optional[str] = Query(None, description="交易日期 YYYY-MM-DD，不传则自动取最新交易日"),
+    limit: int = Query(241, ge=1, le=1000),
     user: User = Depends(get_current_user),
 ) -> list[IntradayKlineData]:
     """
-    获取股票实时分时 K 线数据（akshare 实时拉取，缓存 Redis）。
+    获取股票分时 K 线数据。
 
     - period: 1/5/15/30/60 分钟
-    - limit: 返回条数，默认 240，最大 1000
+    - trade_date: 指定日期（YYYY-MM-DD），不传则返回最新交易日数据
+    - limit: 返回条数，默认 241（一天完整数据），最大 1000
+
+    优先从 stock_intraday 表读取（保证单日完整 241 条），
+    无数据时降级走 akshare 实时拉取。
     """
-    return stock_service.get_intraday_klines(code, period=period, limit=limit)
+    from datetime import date as date_type
+    td = date_type.fromisoformat(trade_date) if trade_date else None
+    return stock_service.get_intraday_klines(code, period=period, limit=limit, trade_date=td)
 
 
 @router.get("/daily-basic/{code}")
@@ -205,11 +216,13 @@ async def get_stock_limit(
 @router.get("/top-list")
 async def get_top_list(
     trade_date: str | None = Query(None, min_length=8, max_length=8, description="交易日期 YYYYMMDD，默认最新"),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(20, ge=1, le=500, description="每页条数"),
+    offset: int = Query(0, ge=0, description="偏移量"),
     user: User = Depends(get_current_user),
-) -> list[TopListData]:
-    """获取龙虎榜每日明细。"""
-    return stock_service.get_top_list(trade_date=trade_date, limit=limit)
+) -> TopListResponse:
+    """获取龙虎榜每日明细（分页）。"""
+    items, total = stock_service.get_top_list(trade_date=trade_date, limit=limit, offset=offset)
+    return TopListResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/top-inst")
@@ -221,6 +234,25 @@ async def get_top_inst(
 ) -> list[TopInstData]:
     """获取龙虎榜机构明细。"""
     return stock_service.get_top_inst(trade_date=trade_date, ts_code=code, limit=limit)
+
+
+@router.get("/limit-up-ladder")
+async def get_limit_up_ladder(
+    trade_date: str | None = Query(None, min_length=8, max_length=8, description="交易日期 YYYYMMDD，默认最新"),
+    top_n_concepts: int = Query(30, ge=1, le=100, description="顶部概念标签数量"),
+    user: User = Depends(get_current_user),
+) -> LimitUpLadderResponse:
+    """获取涨停板天梯聚合数据（概念标签 + 连板天梯 + 炸板）。"""
+    from datetime import datetime
+
+    target_date = None
+    if trade_date:
+        target_date = datetime.strptime(trade_date, "%Y%m%d").date()
+
+    result = limit_up_service.get_limit_up_ladder(
+        trade_date=target_date, top_n_concepts=top_n_concepts
+    )
+    return LimitUpLadderResponse(**result)
 
 
 @router.get("/ths-index")

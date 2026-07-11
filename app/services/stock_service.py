@@ -7,9 +7,10 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.analytics.intraday_sync import StockIntraday
 from app.core.config import settings
 from app.core.redis import redis_client
 from app.db.base import SessionLocal
@@ -46,8 +47,14 @@ def get_pro():
             raise RuntimeError("TUSHARE_TOKEN 未配置，请在 .env 中设置")
         import tushare as ts
 
-        ts.set_token(settings.tushare_token)
-        _pro = ts.pro_api()
+        # 优先使用代理（积分更高，支持更多接口）
+        if settings.tushare_proxy_url and settings.tushare_proxy_token:
+            ts.set_token(settings.tushare_proxy_token)
+            _pro = ts.pro_api(settings.tushare_proxy_token)
+            _pro._DataApi__http_url = settings.tushare_proxy_url
+        else:
+            ts.set_token(settings.tushare_token)
+            _pro = ts.pro_api()
     return _pro
 
 
@@ -124,19 +131,10 @@ def get_stock_quote(code: str) -> StockData:
                 updated_at=datetime.now().isoformat(),
             )
 
-        # 昨收价 = 数据库最新日线的收盘价（对今天来说，最新日线就是昨天）
-        # 如果今天的数据已入库，则取 pre_close；否则取 close 作为昨收
-        today = date.today()
-        if latest.trade_date and latest.trade_date >= today:
-            # 今天的数据已入库，用它的 pre_close
-            pre_close_price = latest.pre_close or latest.open
-            current_price = latest.close
-        else:
-            # 数据库最新日期 < 今天（交易中/今天还没入库）
-            # 昨收 = 最新日线的 close
-            pre_close_price = latest.close
-            current_price = latest.close  # 非实时，iOS 端会用分时最新价覆盖
-
+        # 最新日线记录：close 为当日收盘价，pre_close 为昨收
+        # iOS 端会用分时最新价覆盖 price，后端先给出基于日线的涨跌幅
+        pre_close_price = latest.pre_close or latest.close
+        current_price = latest.close
         change_percent = _format_change_percent(pre_close_price, current_price)
 
         return StockData(
@@ -208,20 +206,164 @@ def _intraday_cache_ttl(latest_datetime_str: str) -> int:
     return 30
 
 
-def get_intraday_klines(code: str, period: str = "1", limit: int = 240) -> list[IntradayKlineData]:
-    """通过 akshare 获取实时分钟 K 线，结果写入 Redis 缓存（不存库）。"""
+def _is_valid_intraday_cache(data: list[dict], period: str) -> bool:
+    """校验 Redis 缓存的分时 K 线数据格式是否正确。
+
+    旧版代码可能把跨日、倒序、条数不对的数据写入缓存，校验失败时让后端重新生成。
+    """
+    if not data or not isinstance(data, list):
+        return False
+
+    if not all(isinstance(item, dict) and item.get("datetime") for item in data):
+        return False
+
+    datetimes = [item["datetime"] for item in data]
+    if datetimes != sorted(datetimes):
+        return False
+
+    # 1 分钟线应为单天完整 241 条（09:30~15:00）
+    if period == "1":
+        dates = {d[:10] for d in datetimes}
+        if len(dates) != 1 or len(data) != 241:
+            return False
+
+    return True
+
+
+def _trading_minute_times() -> list[str]:
+    """生成A股1分钟K线的时间序列（HH:MM），共241个点：09:30~11:30 + 13:01~15:00。"""
+    times = []
+    for minutes in range(9 * 60 + 30, 11 * 60 + 31):
+        h, m = divmod(minutes, 60)
+        times.append(f"{h:02d}:{m:02d}")
+    for minutes in range(13 * 60 + 1, 15 * 60 + 1):
+        h, m = divmod(minutes, 60)
+        times.append(f"{h:02d}:{m:02d}")
+    return times
+
+
+_TRADING_MINUTE_TIMES = _trading_minute_times()
+
+
+def _fill_intraday_gaps(
+    rows: list[StockIntraday], ts_code: str, trade_date: date
+) -> list[IntradayKlineData]:
+    """把数据库查询结果补齐为完整 241 个交易分钟，缺失点用上一分钟 close 填充。"""
+    row_map = {str(r.trade_time): r for r in rows}
+    date_str = trade_date.strftime("%Y-%m-%d")
+    result: list[IntradayKlineData] = []
+    last_close: float | None = None
+
+    for time_str in _TRADING_MINUTE_TIMES:
+        if time_str in row_map:
+            r = row_map[time_str]
+            close = float(r.close) if r.close is not None else last_close
+            if close is None:
+                close = 0.0
+            last_close = close
+            result.append(
+                IntradayKlineData(
+                    ts_code=ts_code,
+                    datetime=f"{date_str} {time_str}:00",
+                    period="1",
+                    open=float(r.open) if r.open is not None else close,
+                    high=float(r.high) if r.high is not None else close,
+                    low=float(r.low) if r.low is not None else close,
+                    close=close,
+                    volume=float(r.volume) if r.volume is not None else None,
+                    amount=float(r.amount) if r.amount is not None else None,
+                )
+            )
+        else:
+            fill_close = last_close if last_close is not None else 0.0
+            result.append(
+                IntradayKlineData(
+                    ts_code=ts_code,
+                    datetime=f"{date_str} {time_str}:00",
+                    period="1",
+                    open=fill_close,
+                    high=fill_close,
+                    low=fill_close,
+                    close=fill_close,
+                    volume=None,
+                    amount=None,
+                )
+            )
+
+    return result
+
+
+def _get_intraday_from_db(ts_code: str, trade_date=None, min_count: int = 240) -> list[IntradayKlineData] | None:
+    """从数据库读取指定（或最近）交易日的完整分时数据，返回补齐后的列表；数据不足则返回 None。"""
+    db = SessionLocal()
+    try:
+        if trade_date:
+            target_date = trade_date
+        else:
+            target_date = db.execute(
+                select(StockIntraday.trade_date)
+                .where(StockIntraday.ts_code == ts_code)
+                .order_by(StockIntraday.trade_date.desc())
+                .limit(1)
+            ).scalar_one_or_none()
+
+        if target_date is None:
+            return None
+
+        rows = (
+            db.execute(
+                select(StockIntraday)
+                .where(StockIntraday.ts_code == ts_code)
+                .where(StockIntraday.trade_date == target_date)
+                .order_by(StockIntraday.trade_time)
+            )
+            .scalars()
+            .all()
+        )
+
+        if len(rows) < min_count:
+            return None
+
+        return _fill_intraday_gaps(rows, ts_code, target_date)
+    finally:
+        db.close()
+
+
+def get_intraday_klines(code: str, period: str = "1", limit: int = 241, trade_date=None) -> list[IntradayKlineData]:
+    """获取分钟 K 线。
+
+    - trade_date 指定时：只返回该日数据（从 DB）
+    - trade_date 不指定时：优先读 DB 最新交易日，无则走 akshare（只保留最新一天）
+    """
     if settings.mock_stock_data:
         return _mock_intraday_klines(code, period=period, limit=limit)
 
     ts_code = _normalize_code(code)
     symbol = _akshare_symbol(code)
+
+    # 指定了日期 → 直接读 DB
+    if trade_date:
+        db_data = _get_intraday_from_db(ts_code, trade_date=trade_date, min_count=100)
+        if db_data:
+            return db_data[:limit]
+        return []
+
     cache_key = f"stock:intraday:{ts_code}:{period}"
 
-    # 优先读 Redis 缓存（短 TTL）
+    # 优先读 Redis 缓存，但先校验格式（防止旧版脏缓存长期生效）
     cached = redis_client.get(cache_key)
-    if cached and isinstance(cached, list):
+    if cached and isinstance(cached, list) and _is_valid_intraday_cache(cached, period):
         return [IntradayKlineData(**item) for item in cached[:limit]]
 
+    # 1 分钟线优先读数据库：历史/已收盘数据是完整 241 条
+    if period == "1":
+        db_data = _get_intraday_from_db(ts_code, min_count=240)
+        if db_data:
+            ttl = _intraday_cache_ttl(db_data[-1].datetime)
+            redis_client.set(cache_key, [r.model_dump() for r in db_data], ex=ttl)
+            return db_data[:limit]
+
+    # 盘中或数据库无数据时，走 akshare 实时拉取（只保留最新一天）
     try:
         import akshare as ak
 
@@ -229,9 +371,16 @@ def get_intraday_klines(code: str, period: str = "1", limit: int = 240) -> list[
         if df is None or df.empty:
             return []
 
-        df = df.sort_values("day", ascending=False).reset_index(drop=True)
+        # 只保留最新一天的数据（解决跨日混合问题）
+        df = df.sort_values("day", ascending=True).reset_index(drop=True)
+        if "day" in df.columns and len(df) > 0:
+            # day 格式: "2026-07-10 09:31:00"
+            df["_date"] = df["day"].str[:10]
+            latest_day = df["_date"].iloc[-1]
+            df = df[df["_date"] == latest_day].drop(columns=["_date"])
+
         result = []
-        for _, row in df.head(limit).iterrows():
+        for _, row in df.tail(limit).iterrows():
             result.append(
                 IntradayKlineData(
                     ts_code=ts_code,
@@ -246,12 +395,11 @@ def get_intraday_klines(code: str, period: str = "1", limit: int = 240) -> list[
                 )
             )
 
-        # 根据数据是否已收盘决定缓存时间：盘中 30 秒，收盘后 7 天
-        ttl = _intraday_cache_ttl(result[0].datetime) if result else 30
+        # 缓存
+        ttl = _intraday_cache_ttl(result[-1].datetime) if result else 30
         redis_client.set(cache_key, [r.model_dump() for r in result], ex=ttl)
         return result
     except Exception as exc:
-        # 拉取失败时如果有缓存也先返回空，避免影响接口
         raise RuntimeError(f"获取分时 K 线失败: {exc}") from exc
 
 
@@ -781,8 +929,12 @@ def get_stock_limit(trade_date: str | None = None, limit: int = 100) -> list[dic
         db.close()
 
 
-def get_top_list(trade_date: str | None = None, limit: int = 100) -> list[dict]:
-    """获取龙虎榜每日明细。"""
+def get_top_list(trade_date: str | None = None, limit: int = 20, offset: int = 0) -> tuple[list[dict], int]:
+    """获取龙虎榜每日明细（支持分页）。
+
+    Returns:
+        (items, total)
+    """
     db = SessionLocal()
     try:
         query = select(TopList).order_by(TopList.net_amount.desc())
@@ -795,12 +947,16 @@ def get_top_list(trade_date: str | None = None, limit: int = 100) -> list[dict]:
                 select(TopList.trade_date).order_by(TopList.trade_date.desc()).limit(1)
             ).scalar_one_or_none()
             if latest_date is None:
-                return []
+                return [], 0
             query = query.where(TopList.trade_date == latest_date)
 
-        rows = db.execute(query.limit(limit)).scalars().all()
+        # 总条数
+        count_query = select(func.count()).select_from(query.subquery())
+        total = db.execute(count_query).scalar() or 0
 
-        return [
+        rows = db.execute(query.limit(limit).offset(offset)).scalars().all()
+
+        items = [
             {
                 "trade_date": r.trade_date.strftime("%Y%m%d") if r.trade_date else "",
                 "ts_code": r.ts_code,
@@ -815,6 +971,7 @@ def get_top_list(trade_date: str | None = None, limit: int = 100) -> list[dict]:
             }
             for r in rows
         ]
+        return items, total
     finally:
         db.close()
 

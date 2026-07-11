@@ -27,6 +27,7 @@ from app.models.analysis import (
     HkHold,
     IndexDailyBasic,
     IndexWeight,
+    LimitCptList,
     LimitListD,
     LimitListThs,
     LimitStep,
@@ -171,7 +172,7 @@ def sync_limit_step(start_date: date = None, end_date: date = None, days: int = 
                 for _, row in df.iterrows():
                     records.append({
                         "trade_date": d,
-                        "step": int(row.get("step", 0)),
+                        "step": int(row.get("nums", row.get("step", 0))),
                         "ts_code": row.get("ts_code"),
                         "name": row.get("name"),
                         "close": row.get("close"),
@@ -229,6 +230,48 @@ def sync_limit_list_ths(start_date: date = None, end_date: date = None, days: in
     except Exception as e:
         db.rollback()
         logger.error(f"[Sync] limit_list_ths 失败: {e}")
+        raise
+    finally:
+        db.close()
+
+
+def sync_limit_cpt_list(start_date: date = None, end_date: date = None, days: int = 1):
+    """同步涨停最强板块统计（同花顺概念）。"""
+    pro = _get_pro()
+    if not start_date:
+        end_date = end_date or date.today()
+        start_date = end_date - timedelta(days=days)
+
+    db = SessionLocal()
+    total = 0
+    try:
+        d = start_date
+        while d <= end_date:
+            ds = _date_str(d)
+            df = pro.limit_cpt_list(trade_date=ds)
+            time.sleep(0.3)
+            if df is not None and not df.empty:
+                records = []
+                for _, row in df.iterrows():
+                    records.append({
+                        "ts_code": row.get("ts_code"),
+                        "trade_date": d,
+                        "name": row.get("name"),
+                        "days": int(row.get("days")) if pd.notna(row.get("days")) else None,
+                        "up_stat": row.get("up_stat"),
+                        "cons_nums": int(row.get("cons_nums")) if pd.notna(row.get("cons_nums")) else None,
+                        "up_nums": int(row.get("up_nums")) if pd.notna(row.get("up_nums")) else None,
+                        "pct_chg": row.get("pct_chg"),
+                        "rank": int(row.get("rank")) if pd.notna(row.get("rank")) else None,
+                    })
+                _safe_upsert(db, LimitCptList, records, ["ts_code", "trade_date"])
+                total += len(records)
+            d += timedelta(days=1)
+        db.commit()
+        logger.info(f"[Sync] limit_cpt_list: {total} 条")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"[Sync] limit_cpt_list 失败: {e}")
         raise
     finally:
         db.close()

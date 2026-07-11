@@ -218,12 +218,18 @@ def job_sync_all(days: int = 1):
 
 
 def job_sync_limit_data(days: int = 1):
-    """同步打板数据（涨跌停+连板+THS榜单）。"""
-    from app.services.analysis_sync_service import sync_limit_list_d, sync_limit_step, sync_limit_list_ths
+    """同步打板数据（涨跌停+连板+THS榜单+涨停板块统计）。"""
+    from app.services.analysis_sync_service import (
+        sync_limit_cpt_list,
+        sync_limit_list_d,
+        sync_limit_list_ths,
+        sync_limit_step,
+    )
     logger.info(f"[Scheduler] 开始同步打板数据，最近 {days} 天")
     sync_limit_list_d(days=days)
     sync_limit_step(days=days)
     sync_limit_list_ths(days=days)
+    sync_limit_cpt_list(days=days)
     logger.info("[Scheduler] 打板数据同步完成")
 
 
@@ -291,6 +297,22 @@ def job_sync_etf_cb(days: int = 1):
     logger.info("[Scheduler] ETF/可转债同步完成")
 
 
+def job_sync_intraday(days: int = 5):
+    """同步全A股分时K线（最近 N 个交易日）。
+
+    - 历史日期：Tushare 代理 stk_mins
+    - 当天：16:00 前用 akshare，16:00 后用 Tushare
+    """
+    from app.analytics.intraday_sync import sync_all_intraday_mixed
+
+    logger.info(f"[Scheduler] 开始同步分时K线，最近 {days} 个交易日")
+    try:
+        sync_all_intraday_mixed(days=days)
+        logger.info("[Scheduler] 分时K线同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 分时K线同步失败: {e}")
+
+
 # ============================================================
 # 任务注册表：job_id -> 函数映射
 # ============================================================
@@ -311,7 +333,8 @@ JOB_REGISTRY: dict[str, callable] = {
     "sync_institution": job_sync_institution,
     "sync_research": job_sync_research,
     "sync_macro": job_sync_macro,
-    "sync_etf_cb": job_sync_etf_cb,
+    # 分时K线
+    "sync_intraday": job_sync_intraday,
 }
 
 JOB_DESCRIPTIONS: dict[str, str] = {
@@ -334,6 +357,8 @@ JOB_DESCRIPTIONS: dict[str, str] = {
     "sync_macro": "[每月] 宏观数据（指数估值+申万行业+CPI+PMI+LPR+社融+指数权重）",
     # 综合
     "sync_all": "[综合] 盘后全量同步（K线+资金+龙虎榜+板块+指数）",
+    # 分时
+    "sync_intraday": "[分时] 全A股1分钟K线（历史Tushare/当天akshare/16点后Tushare）",
 }
 
 

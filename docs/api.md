@@ -175,6 +175,7 @@ Authorization: Bearer {access_token}
   "name": "平安银行",
   "price": 12.35,
   "change_percent": 1.25,
+  "pre_close": 12.20,
   "updated_at": "2026-07-08T10:30:00"
 }
 ```
@@ -218,10 +219,11 @@ Authorization: Bearer {access_token}
 
 获取股票实时分时 K 线数据（分钟级）。
 
-**数据源：** akshare 实时拉取，结果写入 Redis 缓存（不持久化到数据库）。
+**数据源：**
 
-- 盘中（当天未收盘）：缓存 30 秒
-- 当天已收盘或历史日期：缓存 7 天
+- 1 分钟线优先从数据库 `stock_intraday` 表读取（已收盘数据完整 241 条）
+- 盘中或数据库缺失时，降级到 akshare 实时拉取
+- 结果写入 Redis 缓存：盘中 30 秒，已收盘/历史数据 7 天
 
 **路径参数：**
 
@@ -316,30 +318,76 @@ Authorization: Bearer {access_token}
 
 ### GET /stocks/watchlist
 
-获取示例自选股列表。
+获取当前登录用户的自选股列表，按加入时间排序。
 
 **响应示例：**
 
 ```json
-[
-  {
-    "code": "000001.SZ",
-    "name": "平安银行",
-    "price": 12.35,
-    "change_percent": 1.25,
-    "updated_at": "2026-07-08T10:30:00"
-  },
-  {
-    "code": "600519.SH",
-    "name": "贵州茅台",
-    "price": 1680.00,
-    "change_percent": -0.50,
-    "updated_at": "2026-07-08T10:30:00"
-  }
-]
+{
+  "items": [
+    {
+      "code": "000001",
+      "name": "平安银行",
+      "ts_code": "000001.SZ",
+      "created_at": "2026-07-08T10:30:00"
+    },
+    {
+      "code": "600519",
+      "name": "贵州茅台",
+      "ts_code": "600519.SH",
+      "created_at": "2026-07-08T10:35:00"
+    }
+  ],
+  "total": 2
+}
 ```
 
-**说明：** 当前后端返回固定的示例股票列表。后续会改为用户可自定义的自选股持久化。
+### POST /stocks/watchlist
+
+添加自选股。
+
+**请求体：**
+
+```json
+{
+  "code": "000001",
+  "name": "平安银行"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `code` | string | 是 | 股票代码 |
+| `name` | string | 是 | 股票名称 |
+
+**响应示例：**
+
+```json
+{
+  "code": "000001",
+  "name": "平安银行",
+  "ts_code": "000001.SZ",
+  "created_at": "2026-07-08T10:30:00"
+}
+```
+
+### DELETE /stocks/watchlist/{code}
+
+删除自选股。
+
+**路径参数：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `code` | string | 股票代码 |
+
+**响应示例：**
+
+```json
+{
+  "success": true
+}
+```
 
 ### GET /stocks/search
 
@@ -640,32 +688,38 @@ let rank = try await StockService.fetchSectorMoneyflow(sectorType: .industry, li
 
 ### GET /stocks/top-list
 
-获取龙虎榜每日明细。
+获取龙虎榜每日明细（分页）。
 
 **查询参数：**
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `trade_date` | string | 否 | 交易日期 `YYYYMMDD`，默认最新 |
-| `limit` | int | 否 | 返回条数，默认 100，最大 500 |
+| `limit` | int | 否 | 每页条数，默认 20，最大 500 |
+| `offset` | int | 否 | 偏移量，默认 0 |
 
 **响应示例：**
 
 ```json
-[
-  {
-    "trade_date": "20260708",
-    "ts_code": "000001.SZ",
-    "name": "平安银行",
-    "close": 12.35,
-    "pct_change": 10.02,
-    "turnover_rate": 5.60,
-    "amount": 123456789.00,
-    "net_amount": 12345678.00,
-    "net_rate": 10.00,
-    "reason": "日涨幅偏离值达7%的证券"
-  }
-]
+{
+  "items": [
+    {
+      "trade_date": "20260708",
+      "ts_code": "000001.SZ",
+      "name": "平安银行",
+      "close": 12.35,
+      "pct_change": 10.02,
+      "turnover_rate": 5.60,
+      "amount": 123456789.00,
+      "net_amount": 12345678.00,
+      "net_rate": 10.00,
+      "reason": "日涨幅偏离值达7%的证券"
+    }
+  ],
+  "total": 98,
+  "limit": 20,
+  "offset": 0
+}
 ```
 
 ### GET /stocks/top-inst
@@ -698,6 +752,225 @@ let rank = try await StockService.fetchSectorMoneyflow(sectorType: .industry, li
   }
 ]
 ```
+
+### GET /stocks/limit-up-ladder
+
+获取涨停板天梯聚合数据（概念标签 + 连板天梯 + 炸板）。
+
+**查询参数：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `trade_date` | string | 否 | 交易日期 `YYYYMMDD`，默认最新 |
+| `top_n_concepts` | int | 否 | 顶部概念标签数量，默认 30 |
+
+**响应示例：**
+
+```json
+{
+  "trade_date": "20260709",
+  "concept_tags": [
+    {
+      "name": "商业航天",
+      "count": 29,
+      "cons_count": 4,
+      "pct_change": 2.07,
+      "rank": 1
+    }
+  ],
+  "ladder": [
+    {
+      "step": 8,
+      "label": "8板",
+      "stocks": [
+        {
+          "ts_code": "603137.SH",
+          "name": "恒尚节能",
+          "close": 25.20,
+          "pct_chg": 10.00,
+          "first_time": "09:30",
+          "last_time": "09:30",
+          "open_times": 0,
+          "concept_tags": []
+        }
+      ]
+    },
+    {
+      "step": 1,
+      "label": "首板",
+      "stocks": [...]
+    }
+  ],
+  "opened_limit": [
+    {
+      "ts_code": "000001.SZ",
+      "name": "平安银行",
+      "close": 12.35,
+      "pct_chg": 8.50,
+      "first_time": "10:15",
+      "last_time": null,
+      "open_times": 3,
+      "concept_tags": ["银行"]
+    }
+  ]
+}
+```
+
+**字段说明：**
+
+| 字段 | 说明 |
+|---|---|
+| `concept_tags` | 当日涨停最多的概念板块，按涨停家数排序 |
+| `concept_tags.count` | 该概念涨停家数 |
+| `concept_tags.cons_count` | 该概念连板家数 |
+| `ladder` | 连板天梯，按 step 降序排列 |
+| `ladder.step` | 连板天数，1 表示首板 |
+| `ladder.label` | 展示文案：`首板` / `2板` / `8板` 等 |
+| `ladder.stocks` | 该连板层级的个股列表 |
+| `first_time` | 首次涨停时间，格式 `HH:MM` |
+| `open_times` | 涨停打开次数 |
+| `concept_tags`（个股内） | 该股所属的热门概念，最多返回 2 个 |
+| `opened_limit` | 炸板股票列表（盘中触及涨停但未封住） |
+
+## 涨停板天梯后台管理
+
+后台管理页面路径：`/data/limit-up-ladder/index`
+
+### GET /admin/limit-up-ladder/overview
+
+获取涨停板天梯功能的数据依赖概览和调度任务状态。
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "data": {
+    "feature_name": "涨停板天梯",
+    "api_endpoint": "/api/v1/stocks/limit-up-ladder",
+    "latest_trade_date": "20260710",
+    "scheduler_job": {
+      "job_id": "sync_limit_data",
+      "description": "[盘后] 打板数据（涨跌停+连板天梯+THS榜单）",
+      "trigger_type": "interval",
+      "interval_hours": 0,
+      "interval_minutes": 1,
+      "enabled": true,
+      "running": true,
+      "next_run_time": "2026-07-11T15:45:00+08:00"
+    },
+    "dependencies": [
+      {
+        "key": "limit_cpt_list",
+        "name": "涨停最强板块统计",
+        "table": "limit_cpt_list",
+        "description": "同花顺概念板块涨停家数统计，用于顶部概念标签",
+        "latest_trade_date": "2026-07-10",
+        "total_records": 80
+      },
+      {
+        "key": "limit_step",
+        "name": "涨停连板天梯",
+        "table": "limit_step",
+        "description": "个股连板天数，用于 8板/3板/2板/首板 分组",
+        "latest_trade_date": "2026-07-10",
+        "total_records": 32
+      },
+      {
+        "key": "limit_list_d",
+        "name": "涨跌停明细",
+        "table": "limit_list_d",
+        "description": "涨停个股首次涨停时间、打开次数、封单强度等明细",
+        "latest_trade_date": "2026-07-10",
+        "total_records": 479
+      },
+      {
+        "key": "stock_concept",
+        "name": "股票概念映射",
+        "table": "stock_concept",
+        "description": "个股所属概念，用于个股卡片下的概念标签",
+        "latest_trade_date": "长期有效",
+        "total_records": 71868
+      }
+    ]
+  }
+}
+```
+
+### POST /admin/limit-up-ladder/sync
+
+手动触发涨停板天梯相关数据源同步。
+
+**请求体：**
+
+```json
+{
+  "trade_date": "20260710",
+  "days": 1
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `trade_date` | string | 否 | 指定日期 `YYYYMMDD`，不传则同步最近 `days` 天 |
+| `days` | int | 否 | 同步天数，默认 1 |
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "data": {
+    "synced_tables": ["limit_list_d", "limit_step", "limit_cpt_list"],
+    "start_date": "20260710",
+    "end_date": "20260710"
+  }
+}
+```
+
+### GET /admin/limit-up-ladder/job
+
+获取涨停板天梯关联的调度任务（`sync_limit_data`）配置。
+
+### PUT /admin/limit-up-ladder/job
+
+更新涨停板天梯关联的调度任务配置。
+
+**请求体（每分钟更新）：**
+
+```json
+{
+  "trigger_type": "interval",
+  "interval_hours": 0,
+  "interval_minutes": 1,
+  "days": 1,
+  "enabled": true
+}
+```
+
+**请求体（盘后低频）：**
+
+```json
+{
+  "trigger_type": "cron",
+  "cron_hour": 15,
+  "cron_minute": 30,
+  "cron_day_of_week": "mon-fri",
+  "days": 1,
+  "enabled": true
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `trigger_type` | string | 是 | `cron` 或 `interval` |
+| `cron_hour` | int | 否 | cron 小时 |
+| `cron_minute` | int | 否 | cron 分钟 |
+| `cron_day_of_week` | string | 否 | cron 星期 |
+| `interval_hours` | int | 否 | 间隔小时 |
+| `interval_minutes` | int | 否 | 间隔分钟 |
+| `days` | int | 否 | 每次同步天数 |
+| `enabled` | bool | 否 | 是否启用 |
 
 ### GET /stocks/ths-index
 
@@ -784,6 +1057,80 @@ let rank = try await StockService.fetchSectorMoneyflow(sectorType: .industry, li
   }
 ]
 ```
+
+## AI 接口
+
+AI 接口均需登录。
+
+### POST /ai/chat
+
+通用 AI 对话，支持流式返回。
+
+**请求体：**
+
+```json
+{
+  "prompt": "今天大盘怎么看？",
+  "role": "market_analyst",
+  "context": "",
+  "stream": false
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `prompt` | string | 是 | 用户问题 |
+| `role` | string | 否 | 角色：`market_analyst` / `morning_brief` / `stock_analyst` / `news_interpreter` / `global_impact`，默认 `market_analyst` |
+| `context` | string | 否 | 附加上下文 |
+| `stream` | bool | 否 | 是否流式返回，默认 `false` |
+
+**响应示例（非流式）：**
+
+```json
+{
+  "success": true,
+  "data": {
+    "content": "今天市场..."
+  }
+}
+```
+
+### POST /ai/analyze/stock
+
+个股 AI 分析，后端自动拉取行情和基本面作为上下文。
+
+**请求体：**
+
+```json
+{
+  "code": "000001",
+  "question": "分析一下平安银行"
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `code` | string | 是 | 股票代码 |
+| `question` | string | 否 | 问题，不传则使用默认问题 |
+
+### POST /ai/analyze/global-impact
+
+分析当前国际市场对 A 股的影响。
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "data": {
+    "content": "当前国际市场..."
+  }
+}
+```
+
+### GET /ai/roles
+
+获取可用的 AI 角色列表。
 
 ## 股票代码格式
 

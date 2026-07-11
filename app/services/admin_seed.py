@@ -6,6 +6,7 @@
 from sqlalchemy.orm import Session
 
 from app.models.admin import AdminMenu, AdminRole
+from app.models.h5_page import H5Page
 
 
 # 初始角色数据
@@ -137,6 +138,55 @@ _SEED_MENUS = [
         "menu_type": 1,
         "rank": 5,
     },
+    {
+        "id": 17,
+        "parent_id": 10,
+        "path": "/data/limit-up-ladder/index",
+        "name": "LimitUpLadder",
+        "component": "data/limit-up-ladder/index",
+        "redirect": None,
+        "title": "涨停板天梯",
+        "icon": "ep:trend-charts",
+        "menu_type": 1,
+        "rank": 6,
+    },
+    {
+        "id": 18,
+        "parent_id": 10,
+        "path": "/data/aggregation/index",
+        "name": "DataAggregation",
+        "component": "data/aggregation/index",
+        "redirect": None,
+        "title": "聚合数据",
+        "icon": "ep:odometer",
+        "menu_type": 1,
+        "rank": 7,
+    },
+    # ====== 内容管理 ======
+    {
+        "id": 20,
+        "parent_id": 0,
+        "path": "/content",
+        "name": None,
+        "component": None,
+        "redirect": "/content/h5/index",
+        "title": "内容管理",
+        "icon": "ep:document",
+        "menu_type": 0,
+        "rank": 8,
+    },
+    {
+        "id": 21,
+        "parent_id": 20,
+        "path": "/content/h5/index",
+        "name": "ContentH5",
+        "component": "content/h5/index",
+        "redirect": None,
+        "title": "H5页面管理",
+        "icon": "ep:iphone",
+        "menu_type": 1,
+        "rank": 1,
+    },
 ]
 
 
@@ -166,4 +216,47 @@ def seed_admin_menus(db: Session) -> None:
             rank=menu_data.get("rank", 0),
         )
         db.add(menu)
+    db.commit()
+
+
+def seed_h5_pages(db: Session) -> None:
+    """预置一条帮助与反馈示例页面（已存在则跳过）。"""
+    sample_slug = "help-feedback"
+    existing = db.query(H5Page).filter(H5Page.slug == sample_slug).first()
+    if existing:
+        return
+
+    content = """# 帮助与反馈
+
+欢迎使用 Ying+！
+
+## 常见问题
+
+1. **如何查看自选股？**
+   进入 App 首页，点击底部“自选”即可管理。
+
+2. **数据多久更新一次？**
+   日K线、资金等核心数据在每个交易日盘后自动同步。
+
+3. **如何联系客服？**
+   请发送邮件至 **support@yingplus.com**，我们会尽快回复。
+
+## 意见反馈
+
+如果你有任何建议或遇到问题，欢迎通过以下方式告诉我们：
+
+- 邮箱：support@yingplus.com
+- 微信：YingPlusOfficial
+
+我们会认真阅读每一条反馈，持续优化产品体验。
+"""
+
+    page = H5Page(
+        slug=sample_slug,
+        title="帮助与反馈",
+        content_type="markdown",
+        content=content,
+        is_published=1,
+    )
+    db.add(page)
     db.commit()
