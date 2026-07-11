@@ -1,4 +1,5 @@
 from app.models.admin import AdminMenu, AdminPermission, AdminRole, RoleMenu, RolePermission
+from app.models.h5_page import H5Page
 from app.models.analysis import (
     BrokerRecommend,
     CbBasic,

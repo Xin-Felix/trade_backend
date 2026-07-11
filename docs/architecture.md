@@ -13,7 +13,7 @@
 | 数据库 | PostgreSQL + TimescaleDB | 16 |
 | 缓存 | Redis | 7 |
 | 数据迁移 | Alembic | 1.13.1 |
-| 股票数据源 | Tushare Pro / akshare | 1.4.13 / 1.18.35 |
+| 股票数据源 | Tushare Pro / Tushare 代理 / akshare | 1.4.29 / - / 1.18.64 |
 | 定时调度 | APScheduler | 3.10.4 |
 | 认证 | JWT (python-jose) | - |
 | 部署 | Docker Compose | - |
@@ -24,11 +24,15 @@
 trade_backend/
 ├── app/
 │   ├── main.py                  # FastAPI 入口 + lifespan（建表/种子/调度器）
+│   ├── analytics/
+│   │   ├── intraday_sync.py     # 全市场分时K线采集（Tushare代理 stk_mins）
+│   │   └── concept_flow.py      # 概念/行业板块分钟级资金流聚合
 │   ├── api/v1/
 │   │   ├── api.py               # 路由注册汇总
 │   │   └── endpoints/
 │   │       ├── auth.py          # iOS 认证（验证码/密码）
 │   │       ├── admin.py         # 管理后台（登录/路由/用户/菜单/角色）
+│   │       ├── analytics.py     # 分时资金流、概念/行业分钟走势
 │   │       ├── stocks.py        # 股票查询（iOS App）
 │   │       ├── sync.py          # 手动同步 + 数据状态（写日志）
 │   │       ├── scheduler.py     # 定时任务管理 + 执行日志查询
@@ -36,7 +40,7 @@ trade_backend/
 │   │       ├── data_browser.py  # 数据浏览
 │   │       └── tushare/         # Tushare 代理（239个路由）
 │   ├── core/
-│   │   ├── config.py            # Settings（DB/JWT/SMTP/Redis/Tushare）
+│   │   ├── config.py            # Settings（DB/JWT/SMTP/Redis/Tushare/代理）
 │   │   ├── dependencies.py      # get_current_user（JWT解析）
 │   │   ├── redis.py             # Redis 连接
 │   │   └── security.py          # bcrypt + JWT
@@ -50,28 +54,33 @@ trade_backend/
 │   │   ├── admin.py             # RBAC（菜单/权限/角色）
 │   │   ├── scheduler.py         # 定时任务配置
 │   │   ├── scheduler_log.py     # 执行日志
-│   │   └── data_source.py       # 数据源注册（239条）
+│   │   └── data_source.py       # 数据源注册（264条）
 │   ├── schemas/                 # Pydantic 模型
 │   └── services/
 │       ├── auth_service.py      # 认证
 │       ├── admin_service.py     # 后台管理
 │       ├── admin_seed.py        # 菜单+角色种子
-│       ├── stock_service.py     # 股票查询
-│       ├── data_sync_service.py # 原始数据同步
+│       ├── stock_service.py     # 股票查询（含分时K线）
+│       ├── data_sync_service.py # 原始数据同步（支持代理）
 │       ├── analysis_sync_service.py # 分析数据同步
 │       ├── scheduler_service.py # APScheduler（14个任务+日志记录）
 │       ├── scheduler_seed.py    # 定时任务种子
-│       ├── datasource_seed.py   # 数据源种子（239条+本地表标记）
+│       ├── datasource_seed.py   # 数据源种子（264条+本地表标记）
 │       ├── datasource_permission.py # 权限检测
 │       ├── watchlist_service.py # 自选股
 │       └── email_service.py     # 邮件
+├── scripts/
+│   ├── sync_data.py             # 日K线等历史数据同步
+│   ├── sync_intraday.py         # 分时K线采集（全市场，Tushare代理）
+│   ├── check_permissions.py     # 数据源权限刷新
+│   └── sync_recent.py           # 增量同步
 ├── alembic/
 ├── docker-compose.yml
 ├── Dockerfile
 └── requirements.txt
 ```
 
-## 数据库（44+ 张表）
+## 数据库（45+ 张表）
 
 ### 用户
 - `users` — email/password/role/avatar/public_id
@@ -89,7 +98,7 @@ trade_backend/
 - `scheduler_logs` — 执行日志（定时+手动统一记录）
 
 ### 数据源
-- `data_sources` — 239条接口元信息（has_local_table/has_permission/permission_msg）
+- `data_sources` — 264条接口元信息（has_local_table/has_permission/permission_msg）
 
 ### 原始股票数据（TimescaleDB 超表）
 stock_basic / stock_daily / stock_weekly / stock_monthly / stock_yearly /
@@ -97,6 +106,12 @@ stock_daily_basic / stock_fina_indicator / stock_moneyflow /
 sector_moneyflow_industry / sector_moneyflow_concept / moneyflow_hsgt /
 index_basic / index_daily / stock_limit / top_list / top_inst /
 ths_index / ths_daily / ths_member / stock_concept
+
+### 分时数据
+- `stock_intraday` — 全市场1分钟K线（主键: ts_code + trade_date + trade_time）
+  - 每天约 5500 股 × 241 分钟 ≈ 132 万条
+  - 仅保留最近 5 个交易日
+  - 数据源：Tushare 代理 stk_mins 接口
 
 ### 分析数据（25张）
 **打板题材：** limit_list_d / limit_step / limit_list_ths / dc_concept / dc_concept_cons / ths_hot / dc_hot
@@ -111,6 +126,7 @@ ths_index / ths_daily / ths_member / stock_concept
 | /api/v1/auth | iOS 认证 |
 | /api/v1/admin | 后台管理 |
 | /api/v1/stocks | 股票查询 |
+| /api/v1/analytics | 分时资金流、概念/行业聚合 |
 | /api/v1/sync | 手动同步+数据状态 |
 | /api/v1/scheduler | 定时任务+日志 |
 | /api/v1/datasource | 数据源管理 |
@@ -118,6 +134,26 @@ ths_index / ths_daily / ths_member / stock_concept
 | /api/v1/ts/* | Tushare 代理 |
 
 ### 关键接口
+
+**分时资金流（analytics）：**
+- GET /analytics/concept-flow — 概念板块资金流排名（日级汇总）
+- GET /analytics/concept-flow/minute?top_n=12&concept_ids=... — 多概念分钟级走势（气泡动画）
+- GET /analytics/concept-flow/detail?concept_id=xxx — 单概念分钟走势
+- GET /analytics/concept-flow/concepts — 可选概念列表（含默认推荐）
+- GET /analytics/industry-flow/minute?top_n=15&industries=... — 行业板块分钟走势
+- GET /analytics/industry-flow/list — 可选行业列表
+- GET /analytics/stock-flow/minute?code=000001.SZ — 个股分时资金流
+- POST /analytics/intraday/sync?days=5 — 触发全市场分时采集
+- GET /analytics/intraday/status — 分时数据状态
+
+**股票查询（stocks）：**
+- GET /stocks/quote/{code} — 单股行情
+- GET /stocks/klines/{code}?period=D&limit=30 — K线
+- GET /stocks/intraday/{code}?trade_date=2026-07-10 — 分时K线（单日241条）
+- GET /stocks/search?q=xxx — 搜索
+- GET /stocks/basics — 全量基础信息
+- GET /stocks/sector-moneyflow — 板块资金流排行
+- GET /stocks/moneyflow/{code} — 个股资金流
 
 **调度管理：**
 - GET /scheduler/jobs — 任务列表
@@ -136,6 +172,35 @@ ths_index / ths_daily / ths_member / stock_concept
 - GET /datasource/list — 接口列表（分页+筛选）
 - GET /datasource/categories — 分类列表
 - POST /datasource/check-permission — 批量权限检测
+
+## Tushare 代理配置
+
+项目使用第三方 Tushare 代理（高积分），支持 stk_mins 等高级接口：
+
+```bash
+# .env
+TUSHARE_PROXY_URL=https://tx.xiaodefa.top/
+TUSHARE_PROXY_TOKEN=<proxy_token>
+```
+
+配置后，`get_pro()` 会优先使用代理。所有依赖 Tushare 的服务（数据同步、分时采集、权限检测）都会走代理。
+
+## 分时数据采集
+
+通过 `scripts/sync_intraday.py` 采集全市场分时K线：
+
+```bash
+python scripts/sync_intraday.py              # 采集最近5个交易日
+python scripts/sync_intraday.py --days 1     # 只采集最近1个交易日
+```
+
+特性：
+- 数据源：Tushare 代理 stk_mins 接口（直接 HTTP POST，带超时保护）
+- 并发：4 线程（最佳平衡，100% 成功率）
+- 速率：~2 stocks/sec，全市场约 45 分钟/天
+- 数据清洗：去重 + 缺失分钟插值（前后均值）
+- 保留策略：仅保留最近 5 个交易日，自动清理更早数据
+- 容错：15s 超时/请求，错误率 < 0.5%
 
 ## 定时任务（14个）
 
@@ -170,8 +235,14 @@ ths_index / ths_daily / ths_member / stock_concept
 ## 常用命令
 
 ```bash
-docker compose up -d          # 启动
-docker restart yingplus_backend  # 重启后端
-docker logs -f yingplus_backend  # 看日志
-alembic upgrade head          # 迁移
+docker compose up -d              # 启动
+docker restart yingplus_backend   # 重启后端
+docker logs -f yingplus_backend   # 看日志
+alembic upgrade head              # 迁移
+
+# 分时数据采集（宿主机运行）
+python scripts/sync_intraday.py --days 1
+
+# 刷新数据源权限
+python scripts/check_permissions.py
 ```

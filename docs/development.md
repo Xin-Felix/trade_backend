@@ -77,3 +77,6 @@ pytest
 - 生产环境必须修改 `SECRET_KEY`。
 - Tushare Pro 有调用频率限制，全市场同步可能需要较长时间。
 - 开发环境可开启 `MOCK_STOCK_DATA=true` 在没有 Tushare token 时调试。
+- 分时数据采集脚本 (`scripts/sync_intraday.py`) 需在宿主机运行（使用 `.venv`），Docker 内可能因网络问题无法访问代理。
+- Tushare 代理配置在 `.env` 中：`TUSHARE_PROXY_URL` + `TUSHARE_PROXY_TOKEN`，配置后所有 Tushare 调用走代理。
+- 权限检测脚本 (`scripts/check_permissions.py`) 使用直接 HTTP POST，不依赖 tushare SDK（避免挂起问题）。

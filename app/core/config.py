@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     # Tushare Pro Token
     tushare_token: str = ""
 
+    # Tushare 代理地址（咸鱼积分代理，用于分时等高级接口）
+    tushare_proxy_url: str = ""
+    tushare_proxy_token: str = ""  # 代理专用 token（与 tushare_token 不同）
+
     # 开发环境是否使用 mock 股票数据（无 Tushare token 时方便调试）
     mock_stock_data: bool = False
 

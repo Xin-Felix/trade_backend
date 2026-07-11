@@ -8,6 +8,7 @@ from app.db.base import Base
 from app.models import (  # noqa: F401
     admin,
     data_source,
+    h5_page,
     scheduler,
     stock,
     user,

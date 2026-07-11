@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.core.security import get_password_hash
 from app.db.base import Base, SessionLocal, engine
 from app.models.user import User as UserModel
-from app.services.admin_seed import seed_admin_menus
+from app.services.admin_seed import seed_admin_menus, seed_h5_pages
 from app.services.auth_service import create_user
 from app.services.datasource_seed import seed_data_sources
 from app.services.scheduler_seed import seed_scheduler_jobs
@@ -91,6 +91,9 @@ async def lifespan(app: FastAPI):
 
         # 初始化后台管理菜单数据
         seed_admin_menus(db)
+
+        # 初始化 H5 页面示例数据
+        seed_h5_pages(db)
 
         # 初始化定时任务配置
         seed_scheduler_jobs(db)

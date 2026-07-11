@@ -51,8 +51,14 @@ def get_pro():
     if _pro is None:
         if not settings.tushare_token:
             raise RuntimeError("TUSHARE_TOKEN 未配置，请在 .env 中设置")
-        ts.set_token(settings.tushare_token)
-        _pro = ts.pro_api()
+        # 优先使用代理（积分更高，支持更多接口）
+        if settings.tushare_proxy_url and settings.tushare_proxy_token:
+            ts.set_token(settings.tushare_proxy_token)
+            _pro = ts.pro_api(settings.tushare_proxy_token)
+            _pro._DataApi__http_url = settings.tushare_proxy_url
+        else:
+            ts.set_token(settings.tushare_token)
+            _pro = ts.pro_api()
     return _pro
 
 

@@ -9,6 +9,10 @@ bcrypt>=4.0,<5.0
 python-multipart>=0.0.9
 email-validator>=2.0.0
 
+# 内容渲染与清洗
+markdown>=3.8
+bleach>=6.2.0
+
 # 股票数据
 tushare>=1.4.13
 akshare>=1.18.35
