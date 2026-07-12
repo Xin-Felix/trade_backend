@@ -3,6 +3,8 @@
 开发环境启动时自动插入，已存在则跳过。
 """
 
+from app.models.membership import MembershipTier
+from app.models.points import FeaturePermission
 from sqlalchemy.orm import Session
 
 from app.models.admin import AdminMenu, AdminRole
@@ -138,29 +140,140 @@ _SEED_MENUS = [
         "menu_type": 1,
         "rank": 5,
     },
-    {
-        "id": 17,
-        "parent_id": 10,
-        "path": "/data/limit-up-ladder/index",
-        "name": "LimitUpLadder",
-        "component": "data/limit-up-ladder/index",
-        "redirect": None,
-        "title": "涨停板天梯",
-        "icon": "ep:trend-charts",
-        "menu_type": 1,
-        "rank": 6,
-    },
+    # ====== 聚合数据（数据清理/汇总） ======
     {
         "id": 18,
         "parent_id": 10,
+        "path": "/data/aggregation",
+        "name": None,
+        "component": None,
+        "redirect": "/data/aggregation/index",
+        "title": "聚合数据",
+        "icon": "ep:odometer",
+        "menu_type": 0,
+        "rank": 6,
+    },
+    {
+        "id": 19,
+        "parent_id": 18,
         "path": "/data/aggregation/index",
         "name": "DataAggregation",
         "component": "data/aggregation/index",
         "redirect": None,
-        "title": "聚合数据",
-        "icon": "ep:odometer",
+        "title": "聚合概览",
+        "icon": "ep:data-board",
         "menu_type": 1,
+        "rank": 1,
+    },
+    {
+        "id": 17,
+        "parent_id": 18,
+        "path": "/data/limit-up-ladder/index",
+        "name": "LimitUpLadder",
+        "component": "data/limit-up-ladder/index",
+        "redirect": None,
+        "title": "涨停天梯",
+        "icon": "ep:trend-charts",
+        "menu_type": 1,
+        "rank": 2,
+    },
+    # ====== 会员管理 ======
+    {
+        "id": 40,
+        "parent_id": 0,
+        "path": "/membership",
+        "name": None,
+        "component": None,
+        "redirect": "/membership/tiers/index",
+        "title": "会员管理",
+        "icon": "ep:vIP",
+        "menu_type": 0,
+        "rank": 6,
+    },
+    {
+        "id": 41,
+        "parent_id": 40,
+        "path": "/membership/tiers/index",
+        "name": "MembershipTiers",
+        "component": "membership/tiers/index",
+        "redirect": None,
+        "title": "会员套餐",
+        "icon": "ep:ticket",
+        "menu_type": 1,
+        "rank": 1,
+    },
+    {
+        "id": 42,
+        "parent_id": 40,
+        "path": "/membership/orders/index",
+        "name": "MembershipOrders",
+        "component": "membership/orders/index",
+        "redirect": None,
+        "title": "订阅订单",
+        "icon": "ep:shopping-cart",
+        "menu_type": 1,
+        "rank": 2,
+    },
+    {
+        "id": 43,
+        "parent_id": 40,
+        "path": "/membership/users/index",
+        "name": "MembershipUsers",
+        "component": "membership/users/index",
+        "redirect": None,
+        "title": "用户会员",
+        "icon": "ep:user-filled",
+        "menu_type": 1,
+        "rank": 3,
+    },
+    # ====== 积分管理 ======
+    {
+        "id": 30,
+        "parent_id": 0,
+        "path": "/points",
+        "name": None,
+        "component": None,
+        "redirect": "/points/rules/index",
+        "title": "积分管理",
+        "icon": "ep:medal",
+        "menu_type": 0,
         "rank": 7,
+    },
+    {
+        "id": 31,
+        "parent_id": 30,
+        "path": "/points/rules/index",
+        "name": "PointRules",
+        "component": "points/rules/index",
+        "redirect": None,
+        "title": "积分规则",
+        "icon": "ep:present",
+        "menu_type": 1,
+        "rank": 1,
+    },
+    {
+        "id": 32,
+        "parent_id": 30,
+        "path": "/points/records/index",
+        "name": "PointRecords",
+        "component": "points/records/index",
+        "redirect": None,
+        "title": "积分明细",
+        "icon": "ep:list",
+        "menu_type": 1,
+        "rank": 2,
+    },
+    {
+        "id": 33,
+        "parent_id": 30,
+        "path": "/points/features/index",
+        "name": "PointFeatures",
+        "component": "points/features/index",
+        "redirect": None,
+        "title": "功能权限",
+        "icon": "ep:key",
+        "menu_type": 1,
+        "rank": 3,
     },
     # ====== 内容管理 ======
     {
@@ -187,18 +300,31 @@ _SEED_MENUS = [
         "menu_type": 1,
         "rank": 1,
     },
+    {
+        "id": 22,
+        "parent_id": 20,
+        "path": "/content/daily-quote/index",
+        "name": "ContentDailyQuote",
+        "component": "content/daily-quote/index",
+        "redirect": None,
+        "title": "每日一言",
+        "icon": "ep:chat-dot-round",
+        "menu_type": 1,
+        "rank": 2,
+    },
 ]
 
 
 def seed_admin_menus(db: Session) -> None:
-    """插入初始数据（按 ID 逐条检查，已存在跳过，新增插入）。"""
-    # 种子角色
-    if db.query(AdminRole).count() == 0:
-        for role_data in _SEED_ROLES:
+    """插入初始数据：只补充缺失的菜单和角色，不覆盖已有记录。"""
+    # 种子角色：按 code 补充缺失的角色
+    for role_data in _SEED_ROLES:
+        existing = db.query(AdminRole).filter(AdminRole.code == role_data["code"]).first()
+        if not existing:
             db.add(AdminRole(**role_data))
-        db.commit()
+    db.commit()
 
-    # 种子菜单（逐条检查，支持增量）
+    # 种子菜单：只插入不存在的菜单，保留后台手动修改（图标、标题等）
     for menu_data in _SEED_MENUS:
         existing = db.query(AdminMenu).filter(AdminMenu.id == menu_data["id"]).first()
         if existing:
@@ -259,4 +385,71 @@ def seed_h5_pages(db: Session) -> None:
         is_published=1,
     )
     db.add(page)
+    db.commit()
+
+
+# 默认会员档位
+_SEED_MEMBERSHIP_TIERS = [
+    {
+        "code": "vip",
+        "name": "VIP 会员",
+        "description": "月度 VIP，可访问 AI 对话、概念资金流、涨停天梯等高级功能",
+        "price": 2990,
+        "duration_days": 30,
+        "monthly_points_grant": 500,
+        "features": [
+            "ai_chat",
+            "ai_stock_analyze",
+            "analytics_concept_flow",
+            "limit_up_ladder",
+            "sector_moneyflow",
+            "stock_moneyflow",
+            "top_list",
+            "ths_member",
+        ],
+        "enabled": 1,
+    },
+    {
+        "code": "svip",
+        "name": "SVIP 会员",
+        "description": "月度 SVIP，畅享全部功能及 Tushare 代理",
+        "price": 9990,
+        "duration_days": 30,
+        "monthly_points_grant": 2000,
+        "features": ["*"],
+        "enabled": 1,
+    },
+]
+
+# 默认功能权限（只创建不存在的）
+_SEED_FEATURE_PERMISSIONS = [
+    {"code": "ai_chat", "name": "AI 对话", "required_points": 50, "free_daily_limit": 3, "consume_mode": "per_call"},
+    {"code": "ai_stock_analyze", "name": "AI 个股分析", "required_points": 80, "free_daily_limit": 0, "consume_mode": "per_call"},
+    {"code": "ai_global_impact", "name": "AI 国际市场影响", "required_points": 100, "free_daily_limit": 0, "consume_mode": "per_call"},
+    {"code": "analytics_concept_flow", "name": "板块/个股资金流", "required_points": 30, "free_daily_limit": 0, "consume_mode": "per_day"},
+    {"code": "limit_up_ladder", "name": "涨停板天梯", "required_points": 50, "free_daily_limit": 0, "consume_mode": "per_day"},
+    {"code": "sector_moneyflow", "name": "板块资金流排行", "required_points": 30, "free_daily_limit": 0, "consume_mode": "per_day"},
+    {"code": "stock_moneyflow", "name": "个股资金流向", "required_points": 20, "free_daily_limit": 0, "consume_mode": "per_call"},
+    {"code": "top_list", "name": "龙虎榜", "required_points": 30, "free_daily_limit": 0, "consume_mode": "per_day"},
+    {"code": "ths_member", "name": "同花顺成分股", "required_points": 20, "free_daily_limit": 0, "consume_mode": "per_call"},
+    {"code": "tushare_proxy", "name": "Tushare 代理", "required_points": 10, "free_daily_limit": 0, "consume_mode": "per_call"},
+]
+
+
+def seed_membership_data(db: Session) -> None:
+    """初始化会员档位和功能权限（已存在则跳过）。"""
+    # 会员档位
+    for tier_data in _SEED_MEMBERSHIP_TIERS:
+        existing = db.query(MembershipTier).filter(MembershipTier.code == tier_data["code"]).first()
+        if existing:
+            continue
+        db.add(MembershipTier(**tier_data))
+    db.commit()
+
+    # 功能权限
+    for fp_data in _SEED_FEATURE_PERMISSIONS:
+        existing = db.query(FeaturePermission).filter(FeaturePermission.code == fp_data["code"]).first()
+        if existing:
+            continue
+        db.add(FeaturePermission(**fp_data, enabled=1, consume_points=1))
     db.commit()

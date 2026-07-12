@@ -257,9 +257,11 @@ async def get_public_h5_page(
         raise HTTPException(status_code=404, detail="页面不存在或未发布")
 
     return H5PagePublicResponse(
-        slug=page.slug,
-        title=page.title,
-        content_type=page.content_type,
-        content=page.content,
-        rendered_html=_render_html(page),
+        data={
+            "slug": page.slug,
+            "title": page.title,
+            "content_type": page.content_type,
+            "content": page.content,
+            "rendered_html": _render_html(page),
+        }
     )

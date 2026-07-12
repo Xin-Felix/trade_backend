@@ -17,6 +17,7 @@ from app.schemas.admin import (
     RefreshTokenData,
     RefreshTokenResponse,
 )
+from app.services import oss_service
 
 
 def admin_login(db: Session, username: str, password: str) -> AdminLoginResponse:
@@ -49,13 +50,13 @@ def admin_login(db: Session, username: str, password: str) -> AdminLoginResponse
 
     return AdminLoginResponse(
         data=AdminLoginData(
-            avatar=user.avatar or "",
+            avatar=oss_service.resolve_avatar_url(user.avatar) or "",
             username=user.email,
             nickname=user.name or user.email.split("@")[0],
             roles=[user.role],
             permissions=permissions,
-            accessToken=access_token,
-            refreshToken=refresh_token,
+            access_token=access_token,
+            refresh_token=refresh_token,
             expires=expires,
         )
     )
@@ -89,8 +90,8 @@ def admin_refresh_token(db: Session, refresh_token: str) -> RefreshTokenResponse
 
     return RefreshTokenResponse(
         data=RefreshTokenData(
-            accessToken=new_access_token,
-            refreshToken=new_refresh_token,
+            access_token=new_access_token,
+            refresh_token=new_refresh_token,
             expires=expires,
         )
     )
@@ -179,6 +180,33 @@ def _build_menu_tree(menus: list[AdminMenu]) -> list[dict]:
 
     clean_children(roots)
     return roots
+
+
+def ensure_last_admin_protected(
+    db: Session,
+    user: UserModel,
+    new_role: str | None = None,
+    new_is_active: int | None = None,
+) -> None:
+    """禁止将最后一位管理员降权或禁用。"""
+    if user.role != "admin":
+        return
+
+    # 仍然是 admin 且保持启用，无需保护
+    if (new_role is None or new_role == "admin") and (new_is_active is None or new_is_active == 1):
+        return
+
+    other_admins = (
+        db.query(UserModel)
+        .filter(
+            UserModel.id != user.id,
+            UserModel.role == "admin",
+            UserModel.is_active == 1,
+        )
+        .count()
+    )
+    if other_admins == 0:
+        raise ValueError("系统中至少需要保留一位管理员")
 
 
 def _get_role_permissions(db: Session, role: str) -> list[str]:

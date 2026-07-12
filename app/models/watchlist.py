@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Integer, String, UniqueConstraint, func
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
 
 from app.db.base import Base
 
@@ -12,7 +12,13 @@ class Watchlist(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(String(36), nullable=False, index=True, comment="用户 public_id")
+    user_id = Column(
+        String(36),
+        ForeignKey("users.public_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="用户 public_id",
+    )
     ts_code = Column(String(20), nullable=False, comment="Tushare 标准代码，如 000001.SZ")
     code = Column(String(20), nullable=False, comment="原始股票代码，如 000001")
     name = Column(String(100), nullable=False, comment="股票名称")

@@ -3,10 +3,15 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
 from app.db.base import get_db
-from app.schemas.auth import EmailCodeRequest, EmailCodeVerifyRequest, EmailLoginRequest
+from app.schemas.auth import (
+    EmailCodeRequest,
+    EmailCodeVerifyRequest,
+    EmailLoginRequest,
+    RefreshTokenRequest,
+)
 from app.schemas.token import TokenResponse
 from app.schemas.user import PasswordUpdate, User, UserUpdate
-from app.services import auth_service, email_service
+from app.services import auth_service, email_service, oss_service
 
 router = APIRouter()
 
@@ -56,6 +61,15 @@ async def verify_email_code(payload: EmailCodeVerifyRequest, db: Session = Depen
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
+@router.post("/refresh-token", response_model=TokenResponse)
+async def refresh_token(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """用 refresh token 换取新的 access token 和 refresh token。"""
+    try:
+        return auth_service.refresh_access_token(db, payload.refresh_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
+
+
 # ============================================================
 # 用户信息
 # ============================================================
@@ -74,7 +88,7 @@ async def get_current_user_info(
         raise HTTPException(status_code=404, detail="用户不存在")
 
     # 头像：如果存的是 OSS object_key，生成签名 URL
-    avatar_url = _resolve_avatar_url(db_user.avatar)
+    avatar_url = oss_service.resolve_avatar_url(db_user.avatar)
 
     return {
         "success": True,
@@ -105,7 +119,8 @@ async def update_current_user(
     if payload.name is not None:
         db_user.name = payload.name
     if payload.avatar is not None:
-        db_user.avatar = payload.avatar
+        # 统一存储完整公共读 URL
+        db_user.avatar = oss_service.resolve_avatar_url(payload.avatar)
 
     db.commit()
     db.refresh(db_user)
@@ -116,7 +131,7 @@ async def update_current_user(
             "id": db_user.public_id,
             "email": db_user.email,
             "name": db_user.name,
-            "avatar": _resolve_avatar_url(db_user.avatar),
+            "avatar": oss_service.resolve_avatar_url(db_user.avatar),
             "role": db_user.role,
         },
     }
@@ -147,25 +162,3 @@ async def update_password(
     db.commit()
 
     return {"success": True, "message": "密码修改成功"}
-
-
-# ============================================================
-# 辅助函数
-# ============================================================
-
-
-def _resolve_avatar_url(avatar: str | None) -> str | None:
-    """将 avatar 字段解析为可访问的 URL。
-
-    - 如果是 http/https 开头（外部 URL），直接返回
-    - 如果是 OSS object_key（如 avatars/2026/07/xxx.jpg），拼接公共访问 URL
-    - 如果为空，返回 None
-    """
-    if not avatar:
-        return None
-    if avatar.startswith("http://") or avatar.startswith("https://"):
-        return avatar
-    # 当作 OSS object_key，拼接公共读 URL（Bucket 已设为公共读）
-    from app.core.config import settings
-    domain = settings.oss_custom_domain or f"{settings.oss_bucket_name}.oss-cn-hangzhou.aliyuncs.com"
-    return f"https://{domain}/{avatar}"

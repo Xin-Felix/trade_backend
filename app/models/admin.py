@@ -8,7 +8,15 @@
 - role_permissions: 角色 ↔ 按钮权限关联
 """
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, func
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    func,
+)
 
 from app.db.base import Base
 
@@ -54,7 +62,12 @@ class AdminPermission(Base):
     __tablename__ = "admin_permissions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    menu_id = Column(Integer, nullable=False, comment="所属菜单 ID")
+    menu_id = Column(
+        Integer,
+        ForeignKey("admin_menus.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="所属菜单 ID",
+    )
     code = Column(String(100), nullable=False, unique=True, comment="权限标识，如 system:user:add")
     name = Column(String(100), nullable=False, comment="权限名称")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -66,8 +79,18 @@ class RoleMenu(Base):
     __tablename__ = "role_menus"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    role = Column(String(20), nullable=False, comment="角色标识: admin / user")
-    menu_id = Column(Integer, nullable=False, comment="菜单 ID")
+    role = Column(
+        String(20),
+        ForeignKey("admin_roles.code", ondelete="CASCADE"),
+        nullable=False,
+        comment="角色标识: admin / user",
+    )
+    menu_id = Column(
+        Integer,
+        ForeignKey("admin_menus.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="菜单 ID",
+    )
 
 
 class RolePermission(Base):
@@ -76,5 +99,15 @@ class RolePermission(Base):
     __tablename__ = "role_permissions"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    role = Column(String(20), nullable=False, comment="角色标识: admin / user")
-    permission_id = Column(Integer, nullable=False, comment="权限 ID")
+    role = Column(
+        String(20),
+        ForeignKey("admin_roles.code", ondelete="CASCADE"),
+        nullable=False,
+        comment="角色标识: admin / user",
+    )
+    permission_id = Column(
+        Integer,
+        ForeignKey("admin_permissions.id", ondelete="CASCADE"),
+        nullable=False,
+        comment="权限 ID",
+    )

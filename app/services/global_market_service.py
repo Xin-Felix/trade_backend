@@ -64,8 +64,8 @@ def get_global_indices() -> list[dict]:
     results = []
 
     try:
-        # 使用东方财富全球指数接口
-        df = ak.stock_market_index_em()
+        # 使用东方财富全球指数实时行情接口
+        df = ak.index_global_spot_em()
         if df is None or df.empty:
             return results
 
@@ -73,15 +73,15 @@ def get_global_indices() -> list[dict]:
         col_map = {}
         for col in df.columns:
             cl = col.lower()
-            if "代码" in cl or "code" in cl:
+            if "代码" in cl or "code" in cl or col == "f12":
                 col_map["code"] = col
-            elif "名称" in cl or "name" in cl:
+            elif "名称" in cl or "name" in cl or col == "f14":
                 col_map["name"] = col
-            elif "最新" in cl or "price" in cl or "收盘" in cl:
+            elif "最新" in cl or "price" in cl or "收盘" in cl or col == "f2":
                 col_map["price"] = col
-            elif "涨跌幅" in cl or "pct" in cl:
+            elif "涨跌幅" in cl or "pct" in cl or col == "f3":
                 col_map["pct"] = col
-            elif "涨跌额" in cl or "change" in cl:
+            elif "涨跌额" in cl or "change" in cl or col == "f4":
                 col_map["change"] = col
 
         for _, row in df.iterrows():
@@ -104,8 +104,11 @@ def get_global_indices() -> list[dict]:
                     })
                     break
 
+        _log_global_market_event("akshare", "success", f"获取 {len(results)} 条全球指数", data_count=len(results))
+
     except Exception as e:
         logger.warning(f"[GlobalMarket] 全球指数获取失败，尝试备选方案: {e}")
+        _log_global_market_event("akshare", "failed", str(e)[:1000])
         # 备选：逐个获取
         results = _fetch_indices_fallback()
 
@@ -113,15 +116,19 @@ def get_global_indices() -> list[dict]:
 
 
 def _fetch_indices_fallback() -> list[dict]:
-    """备选方案：通过 Tushare index_global 获取。"""
+    """备选方案：通过 Tushare index_global 获取最近交易日的全球指数。"""
     try:
         from app.services.data_sync_service import get_pro
         pro = get_pro()
-        df = pro.index_global(trade_date=date.today().strftime("%Y%m%d"))
-        if df is None or df.empty:
-            # 试昨天
-            df = pro.index_global(trade_date=(date.today() - timedelta(days=1)).strftime("%Y%m%d"))
-        if df is None or df.empty:
+
+        # 取最近 5 个交易日，避免非交易日无数据
+        for days_ago in range(5):
+            trade_date = (date.today() - timedelta(days=days_ago)).strftime("%Y%m%d")
+            df = pro.index_global(trade_date=trade_date)
+            if df is not None and not df.empty:
+                break
+        else:
+            _log_global_market_event("tushare", "failed", "index_global 最近 5 个交易日均无数据")
             return []
 
         results = []
@@ -136,9 +143,11 @@ def _fetch_indices_fallback() -> list[dict]:
                 "change_percent": _safe_float(row.get("pct_chg")),
                 "updated_at": str(row.get("trade_date", "")),
             })
+        _log_global_market_event("tushare", "success", f"通过 index_global 获取 {len(results)} 条全球指数", data_count=len(results))
         return results
     except Exception as e:
         logger.error(f"[GlobalMarket] 备选方案也失败: {e}")
+        _log_global_market_event("tushare", "failed", str(e)[:1000])
         return []
 
 
@@ -299,3 +308,27 @@ def _safe_float(val) -> float:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _log_global_market_event(source: str, status: str, message: str, data_count: int | None = None):
+    """记录全球市场数据获取日志到数据库。"""
+    try:
+        from app.db.base import SessionLocal
+        from app.models.global_market_log import GlobalMarketLog
+
+        db = SessionLocal()
+        try:
+            db.add(
+                GlobalMarketLog(
+                    source=source,
+                    status=status,
+                    message=message,
+                    data_count=data_count,
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        # 落库失败不能影响主流程
+        pass

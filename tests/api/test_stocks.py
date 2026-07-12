@@ -55,4 +55,24 @@ def test_get_watchlist(client: TestClient):
         headers={"Authorization": f"Bearer {token}"},
     )
     assert response.status_code == 200
-    assert isinstance(response.json(), list)
+    data = response.json()
+    assert "items" in data
+    assert "total" in data
+
+
+def test_get_stock_basics(client: TestClient):
+    token = _get_token(client)
+    response = client.get(
+        "/api/v1/stocks/basics",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert isinstance(data, list)
+    assert len(data) > 0
+    first = data[0]
+    assert "code" in first
+    assert "name" in first
+    assert "industry" in first
+    assert "province" in first
+    assert "introduction" in first

@@ -90,6 +90,20 @@ def get_signed_url(object_key: str, expires: int = None) -> str:
     return f"https://{domain}/{object_key}"
 
 
+def resolve_avatar_url(avatar: str | None) -> str | None:
+    """将 avatar 字段解析为可访问的 URL。
+
+    - 如果是 http/https 开头（外部 URL），直接返回
+    - 如果是 OSS object_key（如 avatars/2026/07/xxx.jpg），拼接公共访问 URL
+    - 如果为空，返回 None
+    """
+    if not avatar:
+        return None
+    if avatar.startswith("http://") or avatar.startswith("https://"):
+        return avatar
+    return get_signed_url(avatar)
+
+
 def delete_file(object_key: str) -> bool:
     """删除 OSS 文件。
 

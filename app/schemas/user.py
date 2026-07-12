@@ -8,6 +8,8 @@ class User(BaseModel):
     email: str
     name: Optional[str] = None
     avatar: Optional[str] = None
+    role: str = "user"
+    is_active: bool = True
 
 
 class UserCreate(BaseModel):

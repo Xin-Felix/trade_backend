@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, require_feature
 from app.schemas.user import User
 from app.services import ai_service
 
@@ -38,7 +38,7 @@ class AnalyzeStockRequest(BaseModel):
 @router.post("/chat", response_model=None)
 async def ai_chat(
     body: ChatRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("ai_chat", consume=True)),
 ):
     """AI 对话（支持流式和非流式）。
 
@@ -85,7 +85,7 @@ async def ai_chat(
 @router.post("/analyze/stock")
 async def analyze_stock(
     body: AnalyzeStockRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("ai_stock_analyze", consume=True)),
 ) -> dict:
     """AI 个股分析。自动拉取该股票的行情和基本面数据作为上下文。"""
     from app.services.stock_service import get_stock_quote, get_daily_basic
@@ -122,7 +122,7 @@ async def analyze_stock(
 
 @router.post("/analyze/global-impact")
 async def analyze_global_impact(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("ai_global_impact", consume=True)),
 ) -> dict:
     """分析当前国际市场对A股的影响。自动获取全球市场数据作为上下文。"""
     from app.services.global_market_service import get_global_market_overview

@@ -28,7 +28,7 @@ from app.schemas.admin_user import (
     UserUpdateRequest,
 )
 from app.schemas.user import User
-from app.services import admin_service
+from app.services import admin_service, oss_service
 
 router = APIRouter()
 
@@ -49,7 +49,7 @@ async def admin_login(payload: AdminLoginRequest, db: Session = Depends(get_db))
 async def refresh_token(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
     """刷新 access token。"""
     try:
-        return admin_service.admin_refresh_token(db, payload.refreshToken)
+        return admin_service.admin_refresh_token(db, payload.refresh_token)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -100,7 +100,7 @@ async def get_user_list(
             id=u.public_id,
             email=u.email,
             name=u.name,
-            avatar=u.avatar,
+            avatar=oss_service.resolve_avatar_url(u.avatar),
             role=u.role,
             is_active=u.is_active,
             created_at=u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
@@ -123,6 +123,16 @@ async def update_user(
     db_user = db.query(UserModel).filter(UserModel.public_id == user_id).first()
     if db_user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+
+    try:
+        admin_service.ensure_last_admin_protected(
+            db,
+            db_user,
+            new_role=payload.role,
+            new_is_active=payload.is_active,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if payload.role is not None:
         db_user.role = payload.role

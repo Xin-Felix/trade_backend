@@ -65,11 +65,18 @@ class H5PageOperationResponse(BaseModel):
     message: str = "操作成功"
 
 
-class H5PagePublicResponse(BaseModel):
-    """公开接口返回（供 App WebView）"""
+class H5PagePublicData(BaseModel):
+    """公开接口返回的数据（供 App WebView）"""
 
     slug: str
     title: str
     content_type: str
     content: str
     rendered_html: str
+
+
+class H5PagePublicResponse(BaseModel):
+    """公开接口统一响应"""
+
+    success: bool = True
+    data: H5PagePublicData

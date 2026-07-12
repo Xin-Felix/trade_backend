@@ -175,6 +175,75 @@ def sync_stock_basic(db: Session | None = None) -> int:
             db.close()
 
 
+def sync_stock_company(db: Session | None = None) -> int:
+    """同步上市公司详细信息（stock_company），按交易所分批拉取并更新到 stock_basic 表。"""
+    pro = get_pro()
+
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+
+    try:
+        count = 0
+        for exchange in ("SSE", "SZSE", "BSE"):
+            try:
+                df = pro.stock_company(exchange=exchange)
+            except Exception as exc:
+                _log(f"[sync_stock_company] 拉取 {exchange} 失败: {exc}")
+                continue
+            _tushare_sleep()
+
+            if df is None or df.empty:
+                continue
+
+            for _, row in df.iterrows():
+                ts_code = str(row.get("ts_code", "")).strip()
+                if not ts_code:
+                    continue
+
+                employees = row.get("employees")
+                if employees is not None and not pd.isna(employees):
+                    try:
+                        employees = int(employees)
+                    except (ValueError, TypeError):
+                        employees = None
+                else:
+                    employees = None
+
+                values = {
+                    "province": str(row.get("province", "")) if row.get("province") is not None else None,
+                    "city": str(row.get("city", "")) if row.get("city") is not None else None,
+                    "introduction": str(row.get("introduction", "")) if row.get("introduction") is not None else None,
+                    "main_business": str(row.get("main_business", "")) if row.get("main_business") is not None else None,
+                    "website": str(row.get("website", "")) if row.get("website") is not None else None,
+                    "chairman": str(row.get("chairman", "")) if row.get("chairman") is not None else None,
+                    "reg_capital": str(row.get("reg_capital", "")) if row.get("reg_capital") is not None else None,
+                    "setup_date": _parse_date(row.get("setup_date")),
+                    "employees": employees,
+                }
+                # 过滤掉全空值的记录，避免无意义更新
+                if not any(v is not None for v in values.values()):
+                    continue
+
+                from sqlalchemy import update
+
+                stmt = (
+                    update(StockBasic)
+                    .where(StockBasic.ts_code == ts_code)
+                    .values(values)
+                )
+                result = db.execute(stmt)
+                count += result.rowcount
+
+            db.commit()
+
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
 # ---------------------------------------------------------------------------
 # 交易日历
 # ---------------------------------------------------------------------------
@@ -1487,6 +1556,7 @@ def sync_all(years: int = 10) -> dict:
     """同步所有股票数据。"""
     results = {}
     results["stock_basic"] = sync_stock_basic()
+    results["stock_company"] = sync_stock_company()
     results["daily"] = sync_klines(period="D", years=years)
     results["weekly"] = sync_klines(period="W", years=years)
     results["monthly"] = sync_klines(period="M", years=years)

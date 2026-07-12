@@ -10,7 +10,6 @@ from typing import Optional
 from app.core.dependencies import get_current_user
 from app.schemas.user import User
 from app.services.scheduler_service import (
-    delete_job_config,
     get_all_job_configs,
     get_available_jobs,
     get_job_logs,
@@ -111,18 +110,6 @@ async def trigger_job(
     if not success:
         raise HTTPException(status_code=404, detail=f"未知任务: {job_id}")
     return {"success": True, "data": {"job_id": job_id, "days": days, "status": "started"}}
-
-
-@router.delete("/jobs/{job_id}")
-async def delete_job(
-    job_id: str,
-    user: User = Depends(get_current_user),
-) -> dict:
-    """删除任务配置（从数据库和调度器中移除）。"""
-    success = delete_job_config(job_id)
-    if not success:
-        raise HTTPException(status_code=404, detail=f"任务配置不存在: {job_id}")
-    return {"success": True, "message": f"任务 {job_id} 已删除"}
 
 
 @router.get("/logs")

@@ -34,6 +34,17 @@ class StockBasic(Base):
     delist_date = Column(Date, nullable=True, comment="退市日期")
     is_hs = Column(String(1), nullable=True, comment="是否沪深港通标的")
 
+    # 上市公司详细信息（来自 Tushare stock_company）
+    province = Column(String(50), nullable=True, comment="所在省份")
+    city = Column(String(50), nullable=True, comment="所在城市")
+    introduction = Column(Text, nullable=True, comment="公司介绍")
+    main_business = Column(Text, nullable=True, comment="主要业务及产品")
+    website = Column(String(200), nullable=True, comment="公司主页")
+    chairman = Column(String(100), nullable=True, comment="法人代表/董事长")
+    reg_capital = Column(String(50), nullable=True, comment="注册资本")
+    setup_date = Column(Date, nullable=True, comment="成立日期")
+    employees = Column(Integer, nullable=True, comment="员工人数")
+
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 

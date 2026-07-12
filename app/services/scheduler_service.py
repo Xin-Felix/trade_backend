@@ -174,6 +174,25 @@ def job_sync_stock_limit(days: int = 1):
         logger.error(f"[Scheduler] 涨跌停同步失败: {e}")
 
 
+def job_sync_stock_basic(days: int = 1):
+    """同步股票基础信息 + 上市公司详细信息。"""
+    from app.services.data_sync_service import sync_stock_basic, sync_stock_company
+
+    logger.info("[Scheduler] 开始同步股票基础信息")
+    try:
+        count_basic = sync_stock_basic()
+        logger.info(f"[Scheduler] 股票基础信息同步完成: {count_basic} 条")
+    except Exception as e:
+        logger.error(f"[Scheduler] 股票基础信息同步失败: {e}")
+
+    logger.info("[Scheduler] 开始同步上市公司详细信息")
+    try:
+        count_company = sync_stock_company()
+        logger.info(f"[Scheduler] 上市公司详细信息同步完成: {count_company} 条")
+    except Exception as e:
+        logger.error(f"[Scheduler] 上市公司详细信息同步失败: {e}")
+
+
 def job_sync_all(days: int = 1):
     """综合同步任务：日K线+日线因子+板块资金流+个股资金流+指数+沪深港通+涨跌停+龙虎榜+同花顺。"""
     from app.services.data_sync_service import sync_top_list, sync_top_inst, sync_ths_daily
@@ -313,6 +332,53 @@ def job_sync_intraday(days: int = 5):
         logger.error(f"[Scheduler] 分时K线同步失败: {e}")
 
 
+def job_expire_memberships():
+    """将会员到期记录标记为 expired。"""
+    from app.db.base import SessionLocal
+    from app.services import membership_service
+
+    db = SessionLocal()
+    try:
+        count = membership_service.expire_memberships(db)
+        logger.info(f"[Scheduler] 已处理 {count} 条过期会员")
+    except Exception as e:
+        logger.error(f"[Scheduler] 会员过期处理失败: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def job_grant_monthly_points():
+    """给活跃会员发放月度积分。"""
+    from app.db.base import SessionLocal
+    from app.services import membership_service
+
+    db = SessionLocal()
+    try:
+        count = membership_service.grant_monthly_points_if_due(db)
+        logger.info(f"[Scheduler] 已向 {count} 位会员发放月度积分")
+    except Exception as e:
+        logger.error(f"[Scheduler] 月度积分发放失败: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def job_generate_daily_reviews(days: int = 1):
+    """为所有生效会员生成每日 AI 复盘。"""
+    from app.services.daily_review_service import generate_daily_reviews_for_all_members
+    from datetime import date, timedelta
+
+    logger.info("[Scheduler] 开始生成每日会员复盘")
+    try:
+        # days 参数仅用于兼容调度框架，实际使用今天日期
+        report_date = date.today()
+        result = generate_daily_reviews_for_all_members(report_date=report_date)
+        logger.info(f"[Scheduler] 每日复盘生成完成: {result}")
+    except Exception as e:
+        logger.error(f"[Scheduler] 每日复盘生成失败: {e}")
+
+
 # ============================================================
 # 任务注册表：job_id -> 函数映射
 # ============================================================
@@ -326,6 +392,7 @@ JOB_REGISTRY: dict[str, callable] = {
     "sync_index_daily": job_sync_index_daily,
     "sync_moneyflow_hsgt": job_sync_moneyflow_hsgt,
     "sync_stock_limit": job_sync_stock_limit,
+    "sync_stock_basic": job_sync_stock_basic,
     "sync_all": job_sync_all,
     # 分析数据任务
     "sync_limit_data": job_sync_limit_data,
@@ -335,6 +402,12 @@ JOB_REGISTRY: dict[str, callable] = {
     "sync_macro": job_sync_macro,
     # 分时K线
     "sync_intraday": job_sync_intraday,
+    # ETF/可转债
+    "sync_etf_cb": job_sync_etf_cb,
+    # 会员任务
+    "expire_memberships": job_expire_memberships,
+    "grant_monthly_points": job_grant_monthly_points,
+    "generate_daily_reviews": job_generate_daily_reviews,
 }
 
 JOB_DESCRIPTIONS: dict[str, str] = {
@@ -351,6 +424,7 @@ JOB_DESCRIPTIONS: dict[str, str] = {
     # 每日延后（18:00-20:00）
     "sync_etf_cb": "[每日] ETF+可转债（基础信息+份额+行情）",
     "sync_research": "[每日] 研报数据（券商金股+盈利预测）",
+    "sync_stock_basic": "[每日] 股票基础信息+上市公司详情",
     # 每周（周六）
     "sync_institution": "[每周] 机构行为（北向持仓+股东人数+增减持+筹码+两融）",
     # 每月（1号）
@@ -359,6 +433,10 @@ JOB_DESCRIPTIONS: dict[str, str] = {
     "sync_all": "[综合] 盘后全量同步（K线+资金+龙虎榜+板块+指数）",
     # 分时
     "sync_intraday": "[分时] 全A股1分钟K线（历史Tushare/当天akshare/16点后Tushare）",
+    # 会员
+    "expire_memberships": "[会员] 每日过期会员处理",
+    "grant_monthly_points": "[会员] 每日月度积分发放",
+    "generate_daily_reviews": "[AI] 每日自动生成会员复盘",
 }
 
 
@@ -506,28 +584,6 @@ def save_job_config(
                 scheduler.remove_job(job_id)
 
         return _config_to_dict(cfg)
-    finally:
-        db.close()
-
-
-def delete_job_config(job_id: str) -> bool:
-    """从数据库删除任务配置，并从调度器移除。"""
-    from app.db.base import SessionLocal
-    from app.models.scheduler import SchedulerJob
-
-    db = SessionLocal()
-    try:
-        cfg = db.query(SchedulerJob).filter(SchedulerJob.job_id == job_id).first()
-        if cfg is None:
-            return False
-        db.delete(cfg)
-        db.commit()
-
-        # 从调度器移除
-        existing = scheduler.get_job(job_id)
-        if existing:
-            scheduler.remove_job(job_id)
-        return True
     finally:
         db.close()
 

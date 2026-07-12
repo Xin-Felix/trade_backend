@@ -420,12 +420,23 @@ Authorization: Bearer {access_token}
   {
     "code": "000001",
     "name": "平安银行",
-    "cnspell": "PAYH"
-  },
-  {
-    "code": "600519",
-    "name": "贵州茅台",
-    "cnspell": "GZMT"
+    "cnspell": "PAYH",
+    "area": "深圳",
+    "industry": "银行",
+    "fullname": "平安银行股份有限公司",
+    "market": "主板",
+    "exchange": "SZSE",
+    "list_status": "L",
+    "list_date": "1991-04-03",
+    "province": "广东",
+    "city": "深圳市",
+    "introduction": "公司介绍...",
+    "main_business": "主要业务及产品...",
+    "website": "www.bank.pingan.com",
+    "chairman": "谢永林",
+    "reg_capital": "194.06",
+    "setup_date": "1987-12-22",
+    "employees": 41698
   }
 ]
 ```
@@ -1141,6 +1152,437 @@ AI 接口均需登录。
 - `00700` → `00700.HK`
 - `000001.SZ`（直接传入）
 
+## 积分系统
+
+积分系统用于管理用户积分余额、积分明细、积分规则，以及基于积分门槛的功能权限控制。
+
+### 用户端接口
+
+#### GET /points/balance
+
+获取当前登录用户的积分汇总。
+
+**认证：** 需要登录。
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "data": {
+    "balance": 150,
+    "total_earned": 300,
+    "total_used": 150,
+    "updated_at": "2026-07-11T18:30:00"
+  }
+}
+```
+
+#### GET /points/records
+
+获取当前用户的积分变动明细。
+
+**查询参数：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `page` | int | 否 | 页码，默认 1 |
+| `page_size` | int | 否 | 每页条数，默认 20，最大 100 |
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "data": {
+    "list": [
+      {
+        "id": 1,
+        "type": "earn",
+        "amount": 10,
+        "balance_after": 160,
+        "source": "daily_login",
+        "description": "每日登录奖励",
+        "created_at": "2026-07-11T18:30:00"
+      }
+    ],
+    "total": 5,
+    "page": 1,
+    "page_size": 20
+  }
+}
+```
+
+#### GET /points/features/{feature_code}
+
+检查当前用户是否有权限访问某功能。
+
+**路径参数：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `feature_code` | string | 功能标识，如 `ai_chat` / `limit_up_ladder` |
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "data": {
+    "allowed": true,
+    "reason": "权限校验通过",
+    "required_points": 50,
+    "balance": 150
+  }
+}
+```
+
+### 管理端接口
+
+#### GET /admin/points/point-rules
+
+获取积分规则列表。
+
+#### POST /admin/points/point-rules
+
+创建积分规则。
+
+**请求体：**
+
+```json
+{
+  "code": "daily_login",
+  "name": "每日登录",
+  "rule_type": "earn",
+  "amount": 10,
+  "description": "每日登录奖励",
+  "daily_limit": 1,
+  "enabled": true
+}
+```
+
+#### PUT /admin/points/point-rules/{rule_id}
+
+更新积分规则。
+
+#### DELETE /admin/points/point-rules/{rule_id}
+
+删除积分规则。
+
+#### GET /admin/points/point-records
+
+查询所有用户积分明细（支持筛选）。
+
+**查询参数：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `page` | int | 否 | 页码，默认 1 |
+| `page_size` | int | 否 | 每页条数，默认 20 |
+| `user_id` | int | 否 | 用户 ID |
+| `record_type` | string | 否 | 变动类型：earn/use/deduct/refund/manual |
+| `source` | string | 否 | 来源标识 |
+
+#### POST /admin/points/point-records/adjust
+
+管理员手工调整用户积分（可为正或负）。
+
+**请求体：**
+
+```json
+{
+  "user_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "amount": 100,
+  "description": "活动奖励"
+}
+```
+
+#### GET /admin/points/feature-permissions
+
+获取功能权限列表。
+
+#### POST /admin/points/feature-permissions
+
+创建功能权限。
+
+**请求体：**
+
+```json
+{
+  "code": "ai_chat",
+  "name": "AI 对话",
+  "description": "使用 AI 对话功能",
+  "required_points": 50,
+  "required_role": null,
+  "required_tier": null,
+  "free_daily_limit": 0,
+  "consume_points": true,
+  "consume_mode": "per_call",
+  "enabled": true
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `code` | string | 是 | 功能标识 |
+| `name` | string | 是 | 功能名称 |
+| `description` | string | 否 | 功能说明 |
+| `required_points` | int | 否 | 每次/每天所需积分，0 表示免费 |
+| `required_role` | string | 否 | 所需角色，如 `admin` |
+| `required_tier` | string | 否 | 所需会员档位，如 `vip` / `svip` |
+| `free_daily_limit` | int | 否 | 非会员每日免费次数，0 表示无免费额度 |
+| `consume_points` | bool | 否 | 是否扣积分，默认 `true` |
+| `consume_mode` | string | 否 | 计费模式：`per_call`（每次调用扣，默认）/ `per_day`（自然日首次调用扣，当天后续免费） |
+| `enabled` | bool | 否 | 是否启用，默认 `true` |
+
+**计费模式说明：**
+
+- `per_call`：每次调用都扣 `required_points` 积分。
+- `per_day`：按自然日计费，当天第一次调用扣 `required_points` 积分，当天 00:00 前再次调用不扣积分；次日零点重置，再次调用会重新扣费。
+- 会员覆盖、每日免费额度、角色权限的优先级高于计费模式。
+
+#### PUT /admin/points/feature-permissions/{fp_id}
+
+更新功能权限。
+
+#### DELETE /admin/points/feature-permissions/{fp_id}
+
+删除功能权限。
+
+### 后台管理菜单
+
+积分管理后台页面已注册以下菜单：
+
+- `/points/rules/index` — 积分规则
+- `/points/records/index` — 积分明细
+- `/points/features/index` — 功能权限
+
+前端需在 `vue-pure-admin` 中新增对应页面组件。
+
+## 会员系统
+
+会员系统提供订阅档位、订阅订单、用户会员记录管理，并和积分/功能权限打通：
+
+- 会员有效期内可免积分访问其包含的功能；
+- 购买会员时赠送首月积分；
+- 每日凌晨自动处理过期会员并发放月度积分。
+
+### 用户端接口
+
+#### GET /points/features/{feature_code}
+
+检查当前用户是否有权限访问某功能（已包含会员身份判断）。
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "data": {
+    "allowed": true,
+    "reason": "VIP 会员权限",
+    "required_points": 50,
+    "required_tier": "vip",
+    "balance": 150
+  }
+}
+```
+
+### 管理端接口
+
+所有接口前缀 `/admin/membership`。
+
+#### GET /admin/membership/tiers
+
+获取会员档位列表。
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": 1,
+      "code": "vip",
+      "name": "VIP 会员",
+      "description": "月度 VIP",
+      "price": 2990,
+      "duration_days": 30,
+      "monthly_points_grant": 500,
+      "features": ["ai_chat", "limit_up_ladder"],
+      "enabled": 1,
+      "created_at": "2026-07-11T18:30:00",
+      "updated_at": "2026-07-11T18:30:00"
+    }
+  ]
+}
+```
+
+#### POST /admin/membership/tiers
+
+创建会员档位。
+
+**请求体：**
+
+```json
+{
+  "code": "svip",
+  "name": "SVIP 会员",
+  "description": "畅享全部功能",
+  "price": 9990,
+  "duration_days": 30,
+  "monthly_points_grant": 2000,
+  "features": ["*"],
+  "enabled": true
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `code` | string | 是 | 档位标识，如 `vip` / `svip` |
+| `name` | string | 是 | 档位名称 |
+| `description` | string | 否 | 说明 |
+| `price` | int | 是 | 价格（分） |
+| `duration_days` | int | 是 | 有效天数 |
+| `monthly_points_grant` | int | 否 | 每月赠送积分，默认 0 |
+| `features` | string[] | 否 | 包含的功能 code，`["*"]` 表示全部 |
+| `enabled` | bool | 否 | 是否启用，默认 true |
+
+#### PUT /admin/membership/tiers/{tier_id}
+
+更新会员档位。
+
+#### DELETE /admin/membership/tiers/{tier_id}
+
+删除会员档位。
+
+#### GET /admin/membership/orders
+
+获取订阅订单列表。
+
+**查询参数：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `user_id` | int | 否 | 用户 ID |
+| `status` | string | 否 | 状态：`pending` / `paid` / `cancelled` / `refunded` |
+
+#### POST /admin/membership/orders
+
+创建订阅订单（待支付）。
+
+**请求体：**
+
+```json
+{
+  "user_id": 1,
+  "tier_code": "vip",
+  "amount": 2990,
+  "currency": "CNY",
+  "channel": "wechat"
+}
+```
+
+#### POST /admin/membership/orders/{order_id}/confirm
+
+确认订单支付并开通/续费会员。
+
+**请求体：**
+
+```json
+{
+  "out_trade_no": "商户订单号"
+}
+```
+
+#### GET /admin/membership/users
+
+获取用户会员记录列表。
+
+**查询参数：**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `user_id` | int | 否 | 用户 ID |
+| `status` | string | 否 | 状态：`active` / `expired` / `cancelled` |
+
+#### POST /admin/membership/users/grant
+
+管理员手工开通会员。
+
+**请求体：**
+
+```json
+{
+  "user_id": 1,
+  "tier_code": "vip",
+  "duration_days": 30
+}
+```
+
+#### POST /admin/membership/users/{membership_id}/cancel
+
+取消指定会员记录（标记为 `cancelled`）。
+
+#### GET /admin/membership/status
+
+获取当前登录用户的会员状态。
+
+**响应示例：**
+
+```json
+{
+  "success": true,
+  "data": {
+    "active": true,
+    "tier_code": "vip",
+    "expires_at": "2026-08-11T18:30:00",
+    "balance": 650
+  }
+}
+```
+
+#### POST /admin/membership/tasks/expire
+
+手动触发会员过期检查。
+
+#### POST /admin/membership/tasks/grant-monthly
+
+手动触发月度积分发放。
+
+### 功能权限与会员联动
+
+在 `/admin/points/feature-permissions` 中新增以下字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `required_tier` | string | 所需会员档位，如 `vip` / `svip` |
+| `free_daily_limit` | int | 非会员每日免费次数，0 表示无免费额度 |
+| `consume_points` | int | 是否调用时扣积分：1=是 0=否 |
+| `consume_mode` | string | 计费模式：`per_call`（每次调用扣积分，默认）/ `per_day`（自然日首次调用扣积分，当天后续免费） |
+
+权限校验优先级：
+
+1. `admin` 直接放行；
+2. 功能未配置或已禁用 → 放行；
+3. 当前生效会员覆盖该功能 → 放行（不扣积分）；
+4. `required_role` 匹配 → 放行；
+5. 每日免费额度内 → 放行；
+6. `consume_mode=per_day` 且今日已扣费 → 放行；
+7. 积分充足 → 按 `consume_mode` 扣积分放行；
+8. 否则返回 `402 Payment Required`。
+
+### 后台管理菜单
+
+会员管理后台页面已注册以下菜单：
+
+- `/membership/tiers/index` — 会员套餐
+- `/membership/orders/index` — 订阅订单
+- `/membership/users/index` — 用户会员
+
+前端需在 `vue-pure-admin` 中新增对应页面组件。
+
 ## 错误码
 
 | 状态码 | 含义 | 常见场景 |
@@ -1149,5 +1591,6 @@ AI 接口均需登录。
 | 204 | 成功，无返回体 | 发送验证码 |
 | 400 | 请求参数错误 | 验证码错误/过期、格式错误 |
 | 401 | 未认证 | 缺少 token、token 失效、用户不存在 |
+| 402 | 需要付费/积分 | 功能需要积分或会员，响应体包含 `feature_code` / `required_points` / `required_tier` / `balance` |
 | 429 | 请求过于频繁 | 验证码发送过多 |
 | 500 | 服务器内部错误 | 数据库异常、外部 API 失败 |

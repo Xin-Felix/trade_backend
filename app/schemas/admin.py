@@ -26,13 +26,13 @@ class AdminLoginData(BaseModel):
     nickname: str = ""
     roles: list[str]
     permissions: list[str]
-    accessToken: str
-    refreshToken: str
+    access_token: str
+    refresh_token: str
     expires: str
 
 
 class RefreshTokenRequest(BaseModel):
-    refreshToken: str
+    refresh_token: str
 
 
 class RefreshTokenResponse(BaseModel):
@@ -41,8 +41,8 @@ class RefreshTokenResponse(BaseModel):
 
 
 class RefreshTokenData(BaseModel):
-    accessToken: str
-    refreshToken: str
+    access_token: str
+    refresh_token: str
     expires: str
 
 

@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, require_feature
 from app.db.base import SessionLocal
 from app.schemas.user import User
 
@@ -46,7 +46,7 @@ def _resolve_trade_date(trade_date_str: Optional[str]) -> date:
 async def get_concept_flow(
     trade_date: Optional[str] = Query(None, description="交易日期 YYYY-MM-DD，默认今天"),
     top_n: int = Query(20, ge=5, le=50, description="取前 N 个概念"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("analytics_concept_flow", consume=True)),
 ) -> dict:
     """获取概念板块资金流排名。
 
@@ -74,7 +74,7 @@ async def get_concept_flow_minute(
     trade_date: Optional[str] = Query(None, description="交易日期 YYYY-MM-DD"),
     top_n: int = Query(10, ge=1, le=30, description="取前 N 个概念（不指定concept_ids时生效）"),
     concept_ids: Optional[str] = Query(None, description="指定概念ID列表，逗号分隔，如 885728.TI,885756.TI"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("analytics_concept_flow", consume=True)),
 ) -> dict:
     """获取概念板块分钟级资金流走势（多概念）。
 
@@ -106,7 +106,7 @@ async def get_industry_flow_minute(
     trade_date: Optional[str] = Query(None, description="交易日期 YYYY-MM-DD"),
     top_n: int = Query(15, ge=1, le=50, description="取前 N 个行业"),
     industries: Optional[str] = Query(None, description="指定行业名称列表，逗号分隔，如 半导体,软件服务"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("analytics_concept_flow", consume=True)),
 ) -> dict:
     """获取行业板块分钟级资金流走势。
 
@@ -218,7 +218,7 @@ async def get_available_concepts(
 async def get_concept_flow_detail(
     concept_id: str = Query(..., description="概念ID，如 885760.TI"),
     trade_date: Optional[str] = Query(None, description="交易日期 YYYY-MM-DD"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("analytics_concept_flow", consume=True)),
 ) -> dict:
     """获取单个概念的分钟级资金流走势。
 
@@ -240,7 +240,7 @@ async def get_concept_flow_detail(
 async def get_stock_flow_minute(
     code: str = Query(..., description="股票代码，如 000001.SZ"),
     trade_date: Optional[str] = Query(None, description="交易日期 YYYY-MM-DD"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("analytics_concept_flow", consume=True)),
 ) -> dict:
     """获取单只股票的分时资金流走势。
 

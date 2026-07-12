@@ -5,7 +5,10 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.core.security import create_access_token, get_password_hash, verify_password
+from jose import JWTError, jwt
+
+from app.core.config import settings
+from app.core.security import create_access_token, create_refresh_token, get_password_hash, verify_password
 from app.models.user import User as UserModel
 from app.models.verification_code import VerificationCode
 from app.schemas.token import TokenResponse
@@ -18,9 +21,11 @@ def authenticate_email(db: Session, email: str, password: str) -> TokenResponse:
     if user is None or user.hashed_password is None or not verify_password(password, user.hashed_password):
         raise ValueError("邮箱或密码错误")
 
-    token = create_access_token({"sub": user.public_id, "email": user.email})
+    access_token = create_access_token({"sub": user.public_id, "email": user.email})
+    refresh_token = create_refresh_token({"sub": user.public_id})
     return TokenResponse(
-        access_token=token,
+        access_token=access_token,
+        refresh_token=refresh_token,
         user=User(id=user.public_id, email=user.email, name=user.name),
     )
 
@@ -51,8 +56,9 @@ def authenticate_apple(identity_token: str, user_id: str) -> TokenResponse:
     """
     # TODO: 验证 Apple identity token
     user = User(id=user_id, email="apple_user@example.com", name="Apple User")
-    token = create_access_token({"sub": user.id, "email": user.email})
-    return TokenResponse(access_token=token, user=user)
+    access_token = create_access_token({"sub": user.id, "email": user.email})
+    refresh_token = create_refresh_token({"sub": user.id})
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token, user=user)
 
 
 CODE_TTL_MINUTES = 5
@@ -128,8 +134,36 @@ def verify_email_code(db: Session, email: str, code: str, purpose: str = "login"
 
 def issue_token_for_user(user: UserModel) -> TokenResponse:
     """为已有用户签发 JWT。"""
-    token = create_access_token({"sub": user.public_id, "email": user.email})
+    access_token = create_access_token({"sub": user.public_id, "email": user.email})
+    refresh_token = create_refresh_token({"sub": user.public_id})
     return TokenResponse(
-        access_token=token,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=User(id=user.public_id, email=user.email, name=user.name),
+    )
+
+
+def refresh_access_token(db: Session, refresh_token: str) -> TokenResponse:
+    """用 refresh token 换取新的 access token 和 refresh token。"""
+    try:
+        payload = jwt.decode(refresh_token, settings.secret_key, algorithms=[settings.algorithm])
+        public_id: str = payload.get("sub")
+        token_type: str = payload.get("type")
+        if public_id is None or token_type != "refresh":
+            raise ValueError("无效的 refresh token")
+    except JWTError as exc:
+        raise ValueError("无效的 refresh token") from exc
+
+    user = db.query(UserModel).filter(UserModel.public_id == public_id).first()
+    if user is None:
+        raise ValueError("用户不存在")
+    if not user.is_active:
+        raise ValueError("用户已被禁用")
+
+    access_token = create_access_token({"sub": user.public_id, "email": user.email})
+    new_refresh_token = create_refresh_token({"sub": user.public_id})
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=new_refresh_token,
         user=User(id=user.public_id, email=user.email, name=user.name),
     )

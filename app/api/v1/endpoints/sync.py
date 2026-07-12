@@ -224,6 +224,24 @@ async def sync_stock_limit_endpoint(
     return {"status": "started", "type": "stock_limit", "days": days}
 
 
+@router.post("/stock-company")
+async def sync_stock_company_endpoint(
+    background_tasks: BackgroundTasks,
+    user: User = Depends(get_current_user),
+) -> dict:
+    """同步上市公司详细信息（公司简介、省份、城市、主营业务等）到 stock_basic 表。"""
+    def task():
+        from app.services.data_sync_service import sync_stock_company
+
+        def _do():
+            sync_stock_company()
+
+        _logged_task("manual_stock_company", _do)
+
+    background_tasks.add_task(task)
+    return {"status": "started", "type": "stock_company", "message": "正在后台同步上市公司详细信息"}
+
+
 def _run_sync_concepts():
     """后台任务：同步全部概念板块及其成分股到 stock_concept 表。
 

@@ -369,15 +369,17 @@ def seed_data_sources(db: Session) -> None:
         )
         db.add(ds)
 
-    # 修正本地表标记（覆盖已有记录）
+    # 修正本地表标记：只在缺失时补充，不覆盖已有手动修改
     for api_name, table_name in _LOCAL_TABLE_MAP.items():
         ds = db.query(DataSource).filter(
             DataSource.provider == "tushare",
             DataSource.api_name == api_name,
         ).first()
-        if ds and (ds.has_local_table != 1 or ds.local_table_name != table_name):
-            ds.has_local_table = 1
-            ds.local_table_name = table_name
+        if ds:
+            if ds.has_local_table is None or ds.has_local_table == 0:
+                ds.has_local_table = 1
+            if not ds.local_table_name:
+                ds.local_table_name = table_name
 
     # 给老数据补 provider 字段（兼容存量数据）
     legacy = db.query(DataSource).filter(DataSource.provider.is_(None)).all()
@@ -390,6 +392,7 @@ def seed_data_sources(db: Session) -> None:
 # 需要有本地表的接口映射
 _LOCAL_TABLE_MAP = {
     "stock_basic": "stock_basic",
+    "stock_company": "stock_basic",
     "daily": "stock_daily",
     "weekly": "stock_weekly",
     "monthly": "stock_monthly",

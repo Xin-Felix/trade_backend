@@ -7,8 +7,12 @@ from app.core.config import settings
 from app.db.base import Base
 from app.models import (  # noqa: F401
     admin,
+    daily_quote,
     data_source,
+    global_market_log,
     h5_page,
+    membership,
+    points,
     scheduler,
     stock,
     user,

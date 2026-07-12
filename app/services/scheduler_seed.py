@@ -136,6 +136,20 @@ _SEED_JOBS = [
     },
 
     # ====================================================================
+    # 二点五、每日凌晨（低频静态数据，全天只需刷新一次）
+    # ====================================================================
+    {
+        "job_id": "sync_stock_basic",
+        "description": "股票基础信息+上市公司详情（行业/地区/公司简介等）",
+        "trigger_type": "cron",
+        "cron_hour": 2,
+        "cron_minute": 30,
+        "cron_day_of_week": "mon-sun",
+        "days": 1,
+        "enabled": 1,
+    },
+
+    # ====================================================================
     # 三、每周（周六 10:00，数据有延迟或低频发布）
     # ====================================================================
     {
@@ -186,6 +200,40 @@ _SEED_JOBS = [
         "cron_day_of_week": "mon-fri",
         "days": 1,
         "enabled": 0,  # 默认禁用，避免和单项任务重复
+    },
+
+    # ====================================================================
+    # 六、会员任务（每日 00:05 / 00:10）
+    # ====================================================================
+    {
+        "job_id": "expire_memberships",
+        "description": "会员过期处理",
+        "trigger_type": "cron",
+        "cron_hour": 0,
+        "cron_minute": 5,
+        "cron_day_of_week": "mon-sun",
+        "days": 1,
+        "enabled": 1,
+    },
+    {
+        "job_id": "grant_monthly_points",
+        "description": "会员月度积分发放",
+        "trigger_type": "cron",
+        "cron_hour": 0,
+        "cron_minute": 10,
+        "cron_day_of_week": "mon-sun",
+        "days": 1,
+        "enabled": 1,
+    },
+    {
+        "job_id": "generate_daily_reviews",
+        "description": "AI 每日会员复盘",
+        "trigger_type": "cron",
+        "cron_hour": 17,
+        "cron_minute": 0,
+        "cron_day_of_week": "mon-fri",
+        "days": 1,
+        "enabled": 1,
     },
 ]
 

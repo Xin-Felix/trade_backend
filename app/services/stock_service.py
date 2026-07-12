@@ -7,7 +7,7 @@
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.analytics.intraday_sync import StockIntraday
@@ -74,10 +74,27 @@ def _normalize_code(code: str) -> str:
     return code
 
 
+def _classify_board(con_code: str, con_name: str | None) -> str:
+    """根据股票代码和名称判断所属板块。"""
+    name = con_name or ""
+    if "ST" in name.upper():
+        return "st"
+    if con_code.startswith("688"):
+        return "star"
+    if con_code.startswith("300") or con_code.startswith("301"):
+        return "chuang"
+    if con_code.startswith("8") or con_code.startswith("4") or con_code.startswith("920"):
+        return "bj"
+    if con_code.startswith("60") or con_code.startswith("00") or con_code.startswith("001"):
+        return "main"
+    return "other"
+
+
 def _format_change_percent(prev_close: Decimal, close: Decimal) -> float:
     if prev_close == 0:
         return 0.0
     return round(float((close - prev_close) / prev_close * 100), 2)
+
 
 
 def _get_kline_model(period: str):
@@ -535,7 +552,30 @@ def get_stock_basics() -> list[dict]:
     try:
         rows = (
             db.execute(
-                select(StockBasic.ts_code, StockBasic.symbol, StockBasic.name, StockBasic.cnspell)
+                select(
+                    StockBasic.ts_code,
+                    StockBasic.symbol,
+                    StockBasic.name,
+                    StockBasic.cnspell,
+                    StockBasic.area,
+                    StockBasic.industry,
+                    StockBasic.fullname,
+                    StockBasic.enname,
+                    StockBasic.market,
+                    StockBasic.exchange,
+                    StockBasic.list_status,
+                    StockBasic.list_date,
+                    StockBasic.is_hs,
+                    StockBasic.province,
+                    StockBasic.city,
+                    StockBasic.introduction,
+                    StockBasic.main_business,
+                    StockBasic.website,
+                    StockBasic.chairman,
+                    StockBasic.reg_capital,
+                    StockBasic.setup_date,
+                    StockBasic.employees,
+                )
                 .order_by(StockBasic.ts_code)
             )
             .mappings()
@@ -547,6 +587,24 @@ def get_stock_basics() -> list[dict]:
                 "code": row["symbol"] or row["ts_code"].split(".")[0],
                 "name": row["name"] or row["ts_code"],
                 "cnspell": row["cnspell"],
+                "area": row["area"],
+                "industry": row["industry"],
+                "fullname": row["fullname"],
+                "enname": row["enname"],
+                "market": row["market"],
+                "exchange": row["exchange"],
+                "list_status": row["list_status"],
+                "list_date": row["list_date"].strftime("%Y-%m-%d") if row["list_date"] else None,
+                "is_hs": row["is_hs"],
+                "province": row["province"],
+                "city": row["city"],
+                "introduction": row["introduction"],
+                "main_business": row["main_business"],
+                "website": row["website"],
+                "chairman": row["chairman"],
+                "reg_capital": row["reg_capital"],
+                "setup_date": row["setup_date"].strftime("%Y-%m-%d") if row["setup_date"] else None,
+                "employees": row["employees"],
             }
             for row in rows
         ]
@@ -1038,29 +1096,95 @@ def get_ths_daily(code: str, limit: int = 30) -> list[dict]:
         db.close()
 
 
-def get_ths_member(code: str, limit: int = 1000) -> list[dict]:
-    """获取同花顺指数成分股。"""
+def get_ths_member(
+    code: str,
+    page: int = 1,
+    page_size: int = 20,
+    sort_by: str = "con_code",
+    sort_order: str = "asc",
+    board: str | None = None,
+) -> list[dict]:
+    """获取同花顺指数成分股，支持分页、排序、板块筛选，并附带最新交易日涨跌幅。"""
     ts_code = _normalize_code(code)
     db = SessionLocal()
     try:
-        rows = (
-            db.execute(
-                select(ThsMember)
-                .where(ThsMember.ts_code == ts_code)
-                .order_by(ThsMember.con_code)
-                .limit(limit)
+        # 板块分类表达式（SQL 层面）
+        board_expr = case(
+            (ThsMember.con_name.ilike("%ST%"), "st"),
+            (ThsMember.con_code.like("688%"), "star"),
+            (
+                (ThsMember.con_code.like("300%")) | (ThsMember.con_code.like("301%")),
+                "chuang",
+            ),
+            (
+                (ThsMember.con_code.like("8%"))
+                | (ThsMember.con_code.like("4%"))
+                | (ThsMember.con_code.like("920%")),
+                "bj",
+            ),
+            (
+                (ThsMember.con_code.like("60%"))
+                | (ThsMember.con_code.like("00%"))
+                | (ThsMember.con_code.like("001%")),
+                "main",
+            ),
+            else_="other",
+        ).label("board")
+
+        # 子查询：取每只股票最新交易日的涨跌幅
+        latest_pct_sub = (
+            select(
+                StockDaily.ts_code.label("sd_ts_code"),
+                StockDaily.pct_chg.label("sd_pct_chg"),
+                func.row_number()
+                .over(partition_by=StockDaily.ts_code, order_by=StockDaily.trade_date.desc())
+                .label("rn"),
             )
-            .scalars()
-            .all()
+            .where(
+                StockDaily.ts_code.in_(
+                    select(ThsMember.con_code).where(ThsMember.ts_code == ts_code)
+                )
+            )
+            .subquery()
         )
+
+        # 构建排序列
+        sort_column = ThsMember.con_code
+        if sort_by == "con_name":
+            sort_column = ThsMember.con_name
+        elif sort_by == "pct_change":
+            sort_column = latest_pct_sub.c.sd_pct_chg
+
+        sort_expr = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+
+        offset = (page - 1) * page_size
+
+        query = (
+            select(ThsMember, latest_pct_sub.c.sd_pct_chg, board_expr)
+            .where(ThsMember.ts_code == ts_code)
+            .outerjoin(
+                latest_pct_sub,
+                (ThsMember.con_code == latest_pct_sub.c.sd_ts_code)
+                & (latest_pct_sub.c.rn == 1),
+            )
+        )
+
+        if board and board != "all":
+            query = query.where(board_expr == board)
+
+        query = query.order_by(sort_expr).offset(offset).limit(page_size)
+
+        rows = db.execute(query).all()
 
         return [
             {
-                "ts_code": r.ts_code,
-                "con_code": r.con_code,
-                "con_name": r.con_name,
+                "ts_code": member.ts_code,
+                "con_code": member.con_code,
+                "con_name": member.con_name,
+                "pct_change": round(float(pct_chg), 2) if pct_chg is not None else None,
+                "board": board_value,
             }
-            for r in rows
+            for member, pct_chg, board_value in rows
         ]
     finally:
         db.close()
@@ -1173,7 +1297,29 @@ def _mock_stock_basics() -> list[dict]:
     """Mock 环境下返回全部股票基础信息。"""
     mock_codes = ["000001.SZ", "000002.SZ", "600519.SH", "00700.HK"]
     return [
-        {"code": ts_code.split(".")[0], "name": _mock_name(ts_code), "cnspell": None}
+        {
+            "code": ts_code.split(".")[0],
+            "name": _mock_name(ts_code),
+            "cnspell": None,
+            "area": "深圳" if ts_code.endswith(".SZ") else ("上海" if ts_code.endswith(".SH") else "香港"),
+            "industry": "白酒" if "600519" in ts_code else "银行",
+            "fullname": _mock_name(ts_code) + "股份有限公司",
+            "enname": None,
+            "market": "主板",
+            "exchange": "SZSE" if ts_code.endswith(".SZ") else ("SSE" if ts_code.endswith(".SH") else "HKEX"),
+            "list_status": "L",
+            "list_date": "2000-01-01",
+            "is_hs": None,
+            "province": "广东" if ts_code.endswith(".SZ") else ("上海" if ts_code.endswith(".SH") else "香港"),
+            "city": "深圳" if ts_code.endswith(".SZ") else ("上海" if ts_code.endswith(".SH") else "香港"),
+            "introduction": f"{_mock_name(ts_code)}是一家优秀的上市公司。",
+            "main_business": "主营业务示例",
+            "website": "https://example.com",
+            "chairman": "张三",
+            "reg_capital": "100亿元",
+            "setup_date": "1990-01-01",
+            "employees": 10000,
+        }
         for ts_code in mock_codes
     ]
 

@@ -1,15 +1,24 @@
 from contextlib import asynccontextmanager
+from os import getenv
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.api import api_router
 from app.core.config import settings
+from app.core.exceptions import (
+    generic_exception_handler,
+    http_exception_handler,
+    validation_exception_handler,
+)
+from app.core.logging import configure_logging, set_request_id
 from app.core.security import get_password_hash
 from app.db.base import Base, SessionLocal, engine
 from app.models.user import User as UserModel
-from app.services.admin_seed import seed_admin_menus, seed_h5_pages
+from app.services.admin_seed import seed_admin_menus, seed_h5_pages, seed_membership_data
 from app.services.auth_service import create_user
 from app.services.datasource_seed import seed_data_sources
 from app.services.scheduler_seed import seed_scheduler_jobs
@@ -70,27 +79,39 @@ async def lifespan(app: FastAPI):
     start_scheduler()
 
     # 开发环境初始化测试账号，方便 iOS 端快速验证
+    # 密码可通过环境变量 DEV_TEST_USER_PASSWORD 覆盖
+    # 通过环境变量 ENABLE_DEV_TEST_USER 控制，生产环境建议设置为 false
+    if getenv("ENABLE_DEV_TEST_USER", "true").lower() == "true":
+        db = SessionLocal()
+        try:
+            test_email = "1538933906@qq.com"
+            test_password = getenv("DEV_TEST_USER_PASSWORD") or "123456"
+            try:
+                create_user(db, email=test_email, password=test_password, name="Test User")
+                # 将测试用户设为管理员
+                user = db.query(UserModel).filter(UserModel.email == test_email).first()
+                if user is not None:
+                    user.role = "admin"
+                    db.commit()
+            except ValueError as exc:
+                if "邮箱已存在" not in str(exc):
+                    raise
+                # 用户已存在时重置测试账号密码，确保 iOS 测试登录始终可用
+                user = db.query(UserModel).filter(UserModel.email == test_email).first()
+                if user is not None:
+                    user.hashed_password = get_password_hash(test_password)
+                    user.role = "admin"
+                    db.commit()
+        finally:
+            db.close()
+
     db = SessionLocal()
     try:
-        try:
-            create_user(db, email="1538933906@qq.com", password="123456", name="Test User")
-            # 将测试用户设为管理员
-            user = db.query(UserModel).filter(UserModel.email == "1538933906@qq.com").first()
-            if user is not None:
-                user.role = "admin"
-                db.commit()
-        except ValueError as exc:
-            if "邮箱已存在" not in str(exc):
-                raise
-            # 用户已存在时重置测试账号密码，确保 iOS 测试登录始终可用
-            user = db.query(UserModel).filter(UserModel.email == "1538933906@qq.com").first()
-            if user is not None:
-                user.hashed_password = get_password_hash("123456")
-                user.role = "admin"
-                db.commit()
-
         # 初始化后台管理菜单数据
         seed_admin_menus(db)
+
+        # 初始化会员档位和功能权限
+        seed_membership_data(db)
 
         # 初始化 H5 页面示例数据
         seed_h5_pages(db)
@@ -153,6 +174,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# 配置统一日志：开发环境文本格式，生产环境可开启 JSON 格式
+configure_logging(level=getenv("LOG_LEVEL", "INFO"), json_format=getenv("LOG_JSON", "false").lower() == "true")
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """为每个请求生成 request_id，注入日志上下文并返回响应头。"""
+    rid = set_request_id()
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-Id"] = rid
+        return response
+    finally:
+        # 请求结束后不主动清理 ContextVar，后续异步任务仍可能需要；
+        # 新请求会覆盖自己的 request_id。
+        pass
+
+
 # 允许 iOS App 跨域访问
 app.add_middleware(
     CORSMiddleware,
@@ -162,6 +201,11 @@ app.add_middleware(
 )
 
 app.include_router(api_router, prefix="/api/v1")
+
+# 统一异常响应格式
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, generic_exception_handler)
 
 
 @app.get("/")

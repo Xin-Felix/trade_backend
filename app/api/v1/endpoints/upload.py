@@ -89,27 +89,41 @@ async def upload_avatar(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"上传失败: {e}")
 
+    # 拼接公共读 URL（Bucket 已设为公共读）
+    from app.core.config import settings
+    domain = settings.oss_custom_domain or f"{settings.oss_bucket_name}.oss-cn-hangzhou.aliyuncs.com"
+    public_url = f"https://{domain}/{object_key}"
+
     # 更新用户头像
     from sqlalchemy.orm import Session
     from app.db.base import SessionLocal
     from app.models.user import User as UserModel
+
+    def extract_object_key(avatar: str | None) -> str | None:
+        """从完整 URL 或 object_key 中提取 object_key。"""
+        if not avatar:
+            return None
+        if avatar.startswith("http://") or avatar.startswith("https://"):
+            # 去掉协议和域名，保留路径部分作为 object_key
+            from urllib.parse import urlparse
+            path = urlparse(avatar).path
+            return path.lstrip("/") if path else avatar
+        return avatar
 
     db = SessionLocal()
     try:
         db_user = db.query(UserModel).filter(UserModel.public_id == user.id).first()
         if db_user:
             # 删除旧头像
-            if db_user.avatar and db_user.avatar.startswith("avatars/"):
-                oss_service.delete_file(db_user.avatar)
-            db_user.avatar = object_key
+            old_avatar = db_user.avatar
+            if old_avatar:
+                old_key = extract_object_key(old_avatar)
+                if old_key and old_key.startswith("avatars/"):
+                    oss_service.delete_file(old_key)
+            db_user.avatar = public_url
             db.commit()
     finally:
         db.close()
-
-    # 拼接公共读 URL（Bucket 已设为公共读）
-    from app.core.config import settings
-    domain = settings.oss_custom_domain or f"{settings.oss_bucket_name}.oss-cn-hangzhou.aliyuncs.com"
-    public_url = f"https://{domain}/{object_key}"
 
     return {
         "success": True,

@@ -2,9 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# 安装系统依赖（PostgreSQL 客户端库、编译工具）
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libpq-dev pkg-config \
+# 使用清华 Debian 镜像源，安装 PostgreSQL 客户端运行时库（psycopg2-binary 需要）
+RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/debian|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && sed -i 's|http://deb.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|g' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
 # 先复制依赖文件并安装，利用缓存（使用清华 pip 镜像加速）

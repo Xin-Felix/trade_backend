@@ -5,8 +5,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     app_name: str = "Ying+ Backend"
-    # 生产环境必须改成随机字符串（至少 32 字节），并通过环境变量注入
-    secret_key: str = "your-secret-key-change-in-production"
+    # 生产环境必须改成随机字符串（至少 32 字节），并通过 .env 或环境变量注入
+    # 不再提供默认值，防止未配置时意外使用弱密钥
+    secret_key: str
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 天
     apple_client_id: str = ""  # Apple Sign In 的 Bundle ID

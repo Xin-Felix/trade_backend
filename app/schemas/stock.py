@@ -25,6 +25,28 @@ class StockBasicInfo(BaseModel):
     name: str
     cnspell: Optional[str] = None
 
+    # 股票基础属性
+    area: Optional[str] = None
+    industry: Optional[str] = None
+    fullname: Optional[str] = None
+    enname: Optional[str] = None
+    market: Optional[str] = None
+    exchange: Optional[str] = None
+    list_status: Optional[str] = None
+    list_date: Optional[str] = None
+    is_hs: Optional[str] = None
+
+    # 公司详细信息
+    province: Optional[str] = None
+    city: Optional[str] = None
+    introduction: Optional[str] = None
+    main_business: Optional[str] = None
+    website: Optional[str] = None
+    chairman: Optional[str] = None
+    reg_capital: Optional[str] = None
+    setup_date: Optional[str] = None
+    employees: Optional[int] = None
+
 
 class IndexData(BaseModel):
     """大盘指数数据"""
@@ -314,3 +336,5 @@ class ThsMemberData(BaseModel):
     ts_code: str
     con_code: str
     con_name: Optional[str] = None
+    pct_change: Optional[float] = None
+    board: Optional[str] = None

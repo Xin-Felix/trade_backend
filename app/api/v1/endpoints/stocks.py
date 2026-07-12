@@ -2,7 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_user, require_feature
 from app.schemas.stock import (
     DailyBasicData,
     IndexDailyData,
@@ -142,7 +142,7 @@ async def get_sector_moneyflow(
     trade_date: str | None = Query(None, description="交易日期 YYYYMMDD，默认最新"),
     sort_by: str = Query("net_amount", pattern="^(net_amount|pct_change|net_amount_asc)$"),
     limit: int = Query(20, ge=1, le=100),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("sector_moneyflow", consume=True)),
 ) -> SectorMoneyflowRankResponse:
     """获取板块资金流排行（行业/概念）。"""
     result = stock_service.get_sector_moneyflow_rank(
@@ -160,7 +160,7 @@ async def get_sector_moneyflow_trend(
     start_date: str = Query(..., min_length=8, max_length=8, description="开始日期 YYYYMMDD"),
     end_date: str = Query(..., min_length=8, max_length=8, description="结束日期 YYYYMMDD"),
     top_n: int = Query(30, ge=1, le=100, description="返回累计净流入前 N 的板块"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("sector_moneyflow", consume=True)),
 ) -> SectorMoneyflowTrendResponse:
     """获取板块资金流时间段趋势（动态折线图）。"""
     result = stock_service.get_sector_moneyflow_trend(
@@ -176,7 +176,7 @@ async def get_sector_moneyflow_trend(
 async def get_stock_moneyflow(
     code: str,
     limit: int = Query(30, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("stock_moneyflow", consume=True)),
 ) -> list[StockMoneyflowData]:
     """获取个股资金流向（小单/中单/大单/特大单）。"""
     return stock_service.get_stock_moneyflow(code, limit=limit)
@@ -187,7 +187,7 @@ async def get_moneyflow_hsgt(
     start_date: str | None = Query(None, min_length=8, max_length=8, description="开始日期 YYYYMMDD"),
     end_date: str | None = Query(None, min_length=8, max_length=8, description="结束日期 YYYYMMDD"),
     limit: int = Query(30, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("stock_moneyflow", consume=True)),
 ) -> list[MoneyflowHsgtData]:
     """获取沪深港通资金流向（北向/南向资金）。"""
     return stock_service.get_moneyflow_hsgt(start_date=start_date, end_date=end_date, limit=limit)
@@ -218,7 +218,7 @@ async def get_top_list(
     trade_date: str | None = Query(None, min_length=8, max_length=8, description="交易日期 YYYYMMDD，默认最新"),
     limit: int = Query(20, ge=1, le=500, description="每页条数"),
     offset: int = Query(0, ge=0, description="偏移量"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("top_list", consume=True)),
 ) -> TopListResponse:
     """获取龙虎榜每日明细（分页）。"""
     items, total = stock_service.get_top_list(trade_date=trade_date, limit=limit, offset=offset)
@@ -230,7 +230,7 @@ async def get_top_inst(
     trade_date: str | None = Query(None, min_length=8, max_length=8, description="交易日期 YYYYMMDD"),
     code: str | None = Query(None, description="股票代码"),
     limit: int = Query(100, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("top_list", consume=True)),
 ) -> list[TopInstData]:
     """获取龙虎榜机构明细。"""
     return stock_service.get_top_inst(trade_date=trade_date, ts_code=code, limit=limit)
@@ -240,7 +240,7 @@ async def get_top_inst(
 async def get_limit_up_ladder(
     trade_date: str | None = Query(None, min_length=8, max_length=8, description="交易日期 YYYYMMDD，默认最新"),
     top_n_concepts: int = Query(30, ge=1, le=100, description="顶部概念标签数量"),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_feature("limit_up_ladder", consume=True)),
 ) -> LimitUpLadderResponse:
     """获取涨停板天梯聚合数据（概念标签 + 连板天梯 + 炸板）。"""
     from datetime import datetime
@@ -277,11 +277,22 @@ async def get_ths_daily(
 @router.get("/ths-member/{code}")
 async def get_ths_member(
     code: str,
-    limit: int = Query(1000, ge=1, le=5000),
-    user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页条数"),
+    sort_by: str = Query("con_code", pattern="^(con_code|con_name|pct_change)$", description="排序字段"),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$", description="排序方向"),
+    board: str | None = Query(None, pattern="^(all|main|star|chuang|bj|st|other)$", description="板块筛选"),
+    user: User = Depends(require_feature("ths_member", consume=True)),
 ) -> list[ThsMemberData]:
-    """获取同花顺指数成分股。"""
-    return stock_service.get_ths_member(code, limit=limit)
+    """获取同花顺指数成分股，支持分页、排序和板块筛选。"""
+    return stock_service.get_ths_member(
+        code,
+        page=page,
+        page_size=page_size,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        board=board,
+    )
 
 
 @router.get("/concepts/{code}")

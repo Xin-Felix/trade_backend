@@ -51,6 +51,33 @@ alembic upgrade head
 开发环境首次启动时会自动建表（生产环境建议用 Alembic）。
 `stock_intraday` 表在首次采集时自动创建（`CREATE IF NOT EXISTS`）。
 
+### Migration 历史整理（2026-07-11）
+
+已将所有零散 migration 合并为单一初始 migration：
+
+- `alembic/versions/612d2e772bd1_initial_schema.py`
+
+**整理原因：**
+1. `084a9b1d34ba` 与 `9967f78c96ce` 重复添加了 `feature_permissions.consume_mode` 列。
+2. 旧 migration 链无法从零运行：`d7d13bbbbba6` 会直接 `ALTER TABLE stock_daily` 等表，但这些 stock 表之前没有 migration 创建（此前依赖 `Base.metadata.create_all()`）。
+
+**已存在环境的处理：**
+
+如果某个环境之前已经跑过旧 migration，需要手动将其 `alembic_version` 更新为新的 head，不要重新跑旧 migration：
+
+```sql
+UPDATE alembic_version SET version_num = '612d2e772bd1';
+```
+
+新环境直接执行 `alembic upgrade head` 即可。
+
+### 新增 Migration
+
+```bash
+alembic revision --autogenerate -m "描述"
+alembic upgrade head
+```
+
 ## 数据同步
 
 后端启动时不会自动拉取股票数据。需要手动触发同步任务：

@@ -5,7 +5,9 @@
 挂载在 /api/v1/ts 前缀下。
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from app.core.dependencies import require_feature
 
 # 一、股票基础/行情
 from .stock_basic import router as stock_basic_router
@@ -283,7 +285,7 @@ from .p_delete import router as p_delete_router
 from .p_get import router as p_get_router
 
 # 汇总路由
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_feature("tushare_proxy", consume=True))])
 
 # 一、股票基础/行情
 router.include_router(stock_basic_router)
