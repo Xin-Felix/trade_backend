@@ -78,7 +78,7 @@ class TestPointsService:
 
     def test_adjust_points(self, db: Session, test_user: UserModel):
         point, record = points_service.adjust_points(
-            db, test_user.id, 20, "管理员补偿", operator_id=test_user.id
+            db, test_user.public_id, 20, "管理员补偿", operator_id=test_user.id
         )
         assert point.balance == 20
         assert record.type == "manual"

@@ -235,6 +235,26 @@ _SEED_JOBS = [
         "days": 1,
         "enabled": 1,
     },
+    {
+        "job_id": "generate_ai_morning_report",
+        "description": "AI 每日市场晨报",
+        "trigger_type": "cron",
+        "cron_hour": 8,
+        "cron_minute": 30,
+        "cron_day_of_week": "mon-fri",
+        "days": 1,
+        "enabled": 1,
+    },
+    {
+        "job_id": "generate_ai_position_advices",
+        "description": "AI 每日会员仓位建议",
+        "trigger_type": "cron",
+        "cron_hour": 19,
+        "cron_minute": 0,
+        "cron_day_of_week": "mon-fri",
+        "days": 1,
+        "enabled": 1,
+    },
 ]
 
 

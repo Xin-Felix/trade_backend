@@ -25,7 +25,11 @@ def admin_login(db: Session, username: str, password: str) -> AdminLoginResponse
 
     支持用邮箱作为 username 登录，校验密码和角色。
     """
-    user = db.query(UserModel).filter(UserModel.email == username).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.email == username, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None:
         raise ValueError("用户不存在")
     if not user.hashed_password or not verify_password(password, user.hashed_password):
@@ -75,7 +79,11 @@ def admin_refresh_token(db: Session, refresh_token: str) -> RefreshTokenResponse
     except JWTError:
         raise ValueError("无效的 refresh token")
 
-    user = db.query(UserModel).filter(UserModel.public_id == public_id).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == public_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None:
         raise ValueError("用户不存在")
 
@@ -202,6 +210,7 @@ def ensure_last_admin_protected(
             UserModel.id != user.id,
             UserModel.role == "admin",
             UserModel.is_active == 1,
+            UserModel.is_deleted == 0,
         )
         .count()
     )

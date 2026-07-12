@@ -48,7 +48,9 @@ async def get_current_user(
         )
 
     db_user = await run_in_threadpool(
-        lambda: db.query(UserModel).filter(UserModel.public_id == public_id).first()
+        lambda: db.query(UserModel)
+        .filter(UserModel.public_id == public_id, UserModel.is_deleted == 0)
+        .first()
     )
     if db_user is None:
         raise HTTPException(
@@ -99,7 +101,9 @@ def require_feature(feature_code: str, consume: bool = True):
         db: Session = Depends(get_db),
     ) -> User:
         db_user = await run_in_threadpool(
-            lambda: db.query(UserModel).filter(UserModel.public_id == user.id).first()
+            lambda: db.query(UserModel)
+            .filter(UserModel.public_id == user.id, UserModel.is_deleted == 0)
+            .first()
         )
         if db_user is None:
             raise HTTPException(

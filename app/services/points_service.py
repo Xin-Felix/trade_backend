@@ -33,7 +33,11 @@ class FeaturePermissionNotFoundError(Exception):
 
 def _resolve_user_id(db: Session, public_id: str) -> int:
     """根据 public_id 获取用户数据库自增 ID。"""
-    user = db.query(UserModel).filter(UserModel.public_id == public_id).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == public_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None:
         raise ValueError(f"用户不存在: {public_id}")
     return user.id
@@ -46,7 +50,7 @@ def get_or_create_user_point(db: Session, user_id: int) -> UserPoint:
     """获取或创建用户积分账户（带行锁）。"""
     point = (
         db.query(UserPoint)
-        .filter(UserPoint.user_id == user_id)
+        .filter(UserPoint.user_id == user_id, UserPoint.is_deleted == 0)
         .with_for_update()
         .first()
     )
@@ -189,7 +193,10 @@ def get_records(
     limit: int = 20,
 ) -> tuple[list[PointRecord], int]:
     """获取用户积分明细（分页）。"""
-    query = db.query(PointRecord).filter(PointRecord.user_id == user_id)
+    query = db.query(PointRecord).filter(
+        PointRecord.user_id == user_id,
+        PointRecord.is_deleted == 0,
+    )
     total = query.count()
     records = (
         query.order_by(PointRecord.created_at.desc(), PointRecord.id.desc())
@@ -212,9 +219,13 @@ def list_all_records(
     query = db.query(PointRecord).options(
         joinedload(PointRecord.user),
         joinedload(PointRecord.operator),
-    )
+    ).filter(PointRecord.is_deleted == 0)
     if user_id:
-        user = db.query(UserModel).filter(UserModel.public_id == user_id).first()
+        user = (
+            db.query(UserModel)
+            .filter(UserModel.public_id == user_id, UserModel.is_deleted == 0)
+            .first()
+        )
         if user is None:
             return [], 0
         query = query.filter(PointRecord.user_id == user.id)

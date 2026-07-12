@@ -1,14 +1,21 @@
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, func
 
 from app.db.base import Base
+from app.models.mixins import SoftDeleteMixin
 
 
-class Watchlist(Base):
+class Watchlist(SoftDeleteMixin, Base):
     """用户自选股表"""
 
     __tablename__ = "watchlist"
     __table_args__ = (
-        UniqueConstraint("user_id", "ts_code", name="uq_watchlist_user_code"),
+        Index(
+            "uq_watchlist_user_code_active",
+            "user_id",
+            "ts_code",
+            unique=True,
+            postgresql_where="is_deleted = 0",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)

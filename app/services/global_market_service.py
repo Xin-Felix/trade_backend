@@ -23,23 +23,26 @@ def _get_ak():
 # 全球指数实时行情
 # ============================================================
 
-# 主要国际指数代码映射（东方财富全球指数代码）
+# 主要国际指数代码映射（Tushare ts_code，同时作为对外 code）
 GLOBAL_INDICES = {
     # 美股
-    "DJI": {"name": "道琼斯", "market": "美股", "symbol": ".DJI"},
-    "SPX": {"name": "标普500", "market": "美股", "symbol": ".SPX"},
-    "IXIC": {"name": "纳斯达克", "market": "美股", "symbol": ".IXIC"},
+    "DJI": {"name": "道琼斯", "market": "美股", "ts_code": "DJI"},
+    "SPX": {"name": "标普500", "market": "美股", "ts_code": "SPX"},
+    "IXIC": {"name": "纳斯达克", "market": "美股", "ts_code": "IXIC"},
     # 港股
-    "HSI": {"name": "恒生指数", "market": "港股", "symbol": "HSI"},
-    "HSCEI": {"name": "国企指数", "market": "港股", "symbol": "HSCEI"},
-    "HSTECH": {"name": "恒生科技", "market": "港股", "symbol": "HSTECH"},
+    "HSI": {"name": "恒生指数", "market": "港股", "ts_code": "HSI"},
+    "HSCEI": {"name": "国企指数", "market": "港股", "ts_code": "XIN9"},
+    "HSTECH": {"name": "恒生科技", "market": "港股", "ts_code": "HKTECH"},
     # 亚太
-    "N225": {"name": "日经225", "market": "日本", "symbol": ".N225"},
-    "KS11": {"name": "韩国综合", "market": "韩国", "symbol": ".KS11"},
+    "N225": {"name": "日经225", "market": "日本", "ts_code": "N225"},
+    "KS11": {"name": "韩国综合", "market": "韩国", "ts_code": "KS11"},
     # 欧洲
-    "FTSE": {"name": "英国富时100", "market": "欧洲", "symbol": ".FTSE"},
-    "DAX": {"name": "德国DAX", "market": "欧洲", "symbol": ".DAX"},
+    "FTSE": {"name": "英国富时100", "market": "欧洲", "ts_code": "FTSE"},
+    "DAX": {"name": "德国DAX", "market": "欧洲", "ts_code": "GDAXI"},
 }
+
+# 反向映射：ts_code -> 对外 code
+_TUSHARE_CODE_MAP = {info["ts_code"]: code for code, info in GLOBAL_INDICES.items()}
 
 # 主要商品/汇率
 GLOBAL_COMMODITIES = {
@@ -57,16 +60,79 @@ GLOBAL_COMMODITIES = {
 def get_global_indices() -> list[dict]:
     """获取全球主要股票指数实时行情。
 
+    优先使用 Tushare index_global（付费，稳定），失败后再尝试 akshare。
+
     Returns:
         list of {code, name, market, price, change, change_percent, updated_at}
     """
+    # 1. 优先尝试 Tushare
+    results = _fetch_indices_from_tushare()
+    if results:
+        return results
+
+    # 2. Tushare 无数据时，尝试 akshare
+    logger.warning("[GlobalMarket] Tushare 无全球指数数据，尝试 akshare 备选")
+    return _fetch_indices_from_akshare()
+
+
+def _fetch_indices_from_tushare() -> list[dict]:
+    """通过 Tushare index_global 获取最近交易日的全球指数。"""
+    try:
+        from app.services.data_sync_service import get_pro
+        pro = get_pro()
+
+        # 取最近 10 个交易日，避免非交易日无数据
+        for days_ago in range(10):
+            trade_date = (date.today() - timedelta(days=days_ago)).strftime("%Y%m%d")
+            df = pro.index_global(trade_date=trade_date)
+            if df is not None and not df.empty:
+                break
+        else:
+            _log_global_market_event(
+                "tushare", "failed", "index_global 最近 10 个交易日均无数据"
+            )
+            return []
+
+        results = []
+        for _, row in df.iterrows():
+            ts_code = str(row.get("ts_code", "")).strip()
+            if not ts_code:
+                continue
+            # 只返回我们关注的指数
+            code = _TUSHARE_CODE_MAP.get(ts_code)
+            if not code:
+                continue
+            info = GLOBAL_INDICES[code]
+            results.append({
+                "code": code,
+                "name": info["name"],
+                "market": info["market"],
+                "price": _safe_float(row.get("close")),
+                "change": _safe_float(row.get("change")),
+                "change_percent": _safe_float(row.get("pct_chg")),
+                "updated_at": str(row.get("trade_date", "")),
+            })
+
+        _log_global_market_event(
+            "tushare", "success", f"通过 index_global 获取 {len(results)} 条全球指数",
+            data_count=len(results)
+        )
+        return results
+    except Exception as e:
+        logger.error(f"[GlobalMarket] Tushare 获取失败: {e}")
+        _log_global_market_event("tushare", "failed", str(e)[:1000])
+        return []
+
+
+def _fetch_indices_from_akshare() -> list[dict]:
+    """通过 akshare index_global_spot_em 获取全球指数实时行情。"""
     ak = _get_ak()
     results = []
 
     try:
-        # 使用东方财富全球指数实时行情接口
         df = ak.index_global_spot_em()
         if df is None or df.empty:
+            _log_global_market_event("akshare", "failed", "index_global_spot_em 返回空数据")
             return results
 
         # 标准化列名（不同版本 akshare 列名可能不同）
@@ -104,15 +170,20 @@ def get_global_indices() -> list[dict]:
                     })
                     break
 
-        _log_global_market_event("akshare", "success", f"获取 {len(results)} 条全球指数", data_count=len(results))
+        _log_global_market_event(
+            "akshare", "success", f"通过 index_global_spot_em 获取 {len(results)} 条全球指数",
+            data_count=len(results)
+        )
 
     except Exception as e:
-        logger.warning(f"[GlobalMarket] 全球指数获取失败，尝试备选方案: {e}")
+        logger.warning(f"[GlobalMarket] akshare 全球指数获取失败: {e}")
         _log_global_market_event("akshare", "failed", str(e)[:1000])
-        # 备选：逐个获取
-        results = _fetch_indices_fallback()
 
     return results
+
+
+# 保留原函数名作为别名，兼容旧调用
+_fetch_indices_fallback = _fetch_indices_from_akshare
 
 
 def _fetch_indices_fallback() -> list[dict]:

@@ -1,6 +1,9 @@
 from app.models.admin import AdminMenu, AdminPermission, AdminRole, RoleMenu, RolePermission
+from app.models.ai_morning_report import AiMorningReport
+from app.models.ai_position_advice import AiPositionAdvice
 from app.models.daily_quote import DailyQuote
 from app.models.daily_review import DailyReview
+from app.models.market_daily_review import MarketDailyReview
 from app.models.h5_page import H5Page
 from app.models.membership import (
     MembershipTier,
@@ -61,6 +64,7 @@ from app.models.stock import (
     TopInst,
     TopList,
 )
+from app.models.portfolio import Portfolio
 from app.models.user import User
 from app.models.verification_code import VerificationCode
 from app.models.watchlist import Watchlist

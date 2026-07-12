@@ -17,7 +17,11 @@ router = APIRouter()
 
 
 def _get_db_user(db: Session, public_id: str) -> UserModel:
-    user = db.query(UserModel).filter(UserModel.public_id == public_id).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == public_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None:
         from fastapi import HTTPException, status
 

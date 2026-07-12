@@ -63,7 +63,11 @@ async def get_async_routes(
     db: Session = Depends(get_db),
 ):
     """获取当前用户的动态路由/菜单（根据角色过滤）。"""
-    db_user = db.query(UserModel).filter(UserModel.public_id == user.id).first()
+    db_user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == user.id, UserModel.is_deleted == 0)
+        .first()
+    )
     role = db_user.role if db_user else "user"
     routes = admin_service.get_async_routes(db, role)
     return AsyncRoutesResponse(data=routes)
@@ -80,11 +84,14 @@ async def get_user_list(
     page_size: int = Query(20, ge=1, le=100),
     keyword: str | None = Query(None, description="邮箱/名称搜索"),
     role: str | None = Query(None, description="角色筛选"),
+    include_deleted: bool = Query(False, description="是否包含已删除用户"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """获取用户列表（分页 + 搜索）。"""
+    """获取用户列表（分页 + 搜索）。默认不包含已删除用户。"""
     query = db.query(UserModel)
+    if not include_deleted:
+        query = query.filter(UserModel.is_deleted == 0)
 
     if keyword:
         like = f"%{keyword}%"
@@ -120,7 +127,11 @@ async def update_user(
     db: Session = Depends(get_db),
 ):
     """编辑用户信息（角色/名称/状态）。"""
-    db_user = db.query(UserModel).filter(UserModel.public_id == user_id).first()
+    db_user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == user_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if db_user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
 
@@ -153,7 +164,11 @@ async def reset_user_password(
     db: Session = Depends(get_db),
 ):
     """重置用户密码。"""
-    db_user = db.query(UserModel).filter(UserModel.public_id == user_id).first()
+    db_user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == user_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if db_user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
 
@@ -313,7 +328,12 @@ async def get_role_list(
     all_roles = db.query(AdminRole).order_by(AdminRole.id.asc()).all()
     roles = []
     for r in all_roles:
-        user_count = db.query(func.count(UserModel.id)).filter(UserModel.role == r.code).scalar() or 0
+        user_count = (
+            db.query(func.count(UserModel.id))
+            .filter(UserModel.role == r.code, UserModel.is_deleted == 0)
+            .scalar()
+            or 0
+        )
         menu_ids = [rm.menu_id for rm in db.query(RoleMenu).filter(RoleMenu.role == r.code).all()]
         roles.append(RoleItem(
             role=r.code,
@@ -379,7 +399,12 @@ async def delete_role(
 
     # 检查是否有用户在使用该角色
     from sqlalchemy import func
-    user_count = db.query(func.count(UserModel.id)).filter(UserModel.role == role).scalar() or 0
+    user_count = (
+        db.query(func.count(UserModel.id))
+        .filter(UserModel.role == role, UserModel.is_deleted == 0)
+        .scalar()
+        or 0
+    )
     if user_count > 0:
         raise HTTPException(status_code=400, detail=f"该角色下还有 {user_count} 个用户，请先转移用户")
 

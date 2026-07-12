@@ -23,7 +23,11 @@ router = APIRouter()
 
 def _get_db_user(db: Session, public_id: str) -> UserModel:
     """根据 public_id 获取数据库用户对象。"""
-    user = db.query(UserModel).filter(UserModel.public_id == public_id).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == public_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
     return user

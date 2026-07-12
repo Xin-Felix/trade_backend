@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.dependencies import get_current_user, require_feature
 from app.schemas.stock import (
@@ -25,10 +25,22 @@ from app.schemas.stock import (
     TopListData,
     TopListResponse,
 )
+from app.schemas.portfolio import (
+    PortfolioAddRequest,
+    PortfolioItem,
+    PortfolioResponse,
+    PortfolioUpdateRequest,
+)
 from app.schemas.user import User
 from app.schemas.watchlist import WatchlistAddRequest, WatchlistItem, WatchlistResponse
-from app.services import limit_up_service, stock_service, watchlist_service
-
+from app.services import (
+    limit_up_service,
+    portfolio_service,
+    stock_service,
+    watchlist_service,
+)
+from app.services.portfolio_service import PortfolioLimitExceededError
+from app.services.watchlist_service import WatchlistLimitExceededError
 router = APIRouter()
 
 
@@ -123,7 +135,13 @@ async def add_watchlist(
     user: User = Depends(get_current_user),
 ) -> WatchlistItem:
     """添加自选股。"""
-    return watchlist_service.add_to_watchlist(user.id, body.code, body.name)
+    try:
+        return watchlist_service.add_to_watchlist(user.id, body.code, body.name)
+    except WatchlistLimitExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
 
 
 @router.delete("/watchlist/{code}")
@@ -133,6 +151,67 @@ async def remove_watchlist(
 ) -> dict:
     """删除自选股。"""
     removed = watchlist_service.remove_from_watchlist(user.id, code)
+    return {"success": removed}
+
+
+@router.get("/portfolio")
+async def get_portfolio(user: User = Depends(get_current_user)) -> PortfolioResponse:
+    """获取用户持仓列表，按标记时间排序。"""
+    items = portfolio_service.get_portfolio(user.id)
+    return PortfolioResponse(items=items, total=len(items))
+
+
+@router.post("/portfolio")
+async def add_portfolio(
+    body: PortfolioAddRequest,
+    user: User = Depends(get_current_user),
+) -> PortfolioItem:
+    """添加持仓。"""
+    try:
+        return portfolio_service.add_to_portfolio(
+            user.id,
+            body.code,
+            body.name,
+            cost_price=body.cost_price,
+            quantity=body.quantity,
+            is_margin=body.is_margin,
+            note=body.note,
+        )
+    except PortfolioLimitExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+
+
+@router.patch("/portfolio/{code}")
+async def update_portfolio(
+    code: str,
+    body: PortfolioUpdateRequest,
+    user: User = Depends(get_current_user),
+) -> PortfolioItem:
+    """更新持仓信息（成本价、数量、融资标记、备注）。"""
+    item = portfolio_service.update_portfolio(
+        user.id,
+        code,
+        cost_price=body.cost_price,
+        quantity=body.quantity,
+        is_margin=body.is_margin,
+        note=body.note,
+    )
+    if item is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="持仓不存在")
+    return item
+
+
+@router.delete("/portfolio/{code}")
+async def remove_portfolio(
+    code: str,
+    user: User = Depends(get_current_user),
+) -> dict:
+    """删除持仓。"""
+    removed = portfolio_service.remove_from_portfolio(user.id, code)
     return {"success": removed}
 
 

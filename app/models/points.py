@@ -11,9 +11,10 @@ from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
+from app.models.mixins import SoftDeleteMixin
 
 
-class UserPoint(Base):
+class UserPoint(SoftDeleteMixin, Base):
     """用户积分余额表"""
 
     __tablename__ = "user_points"
@@ -27,7 +28,7 @@ class UserPoint(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
-class PointRecord(Base):
+class PointRecord(SoftDeleteMixin, Base):
     """积分变动明细表"""
 
     __tablename__ = "point_records"

@@ -32,7 +32,11 @@ router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 def _get_db_user(db: Session, public_id: str) -> UserModel:
-    user = db.query(UserModel).filter(UserModel.public_id == public_id).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == public_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
     return user
@@ -170,7 +174,11 @@ async def adjust_points(
 ):
     """管理员手工调整用户积分。"""
     operator = _get_db_user(db, current_user.id)
-    target_user = db.query(UserModel).filter(UserModel.public_id == payload.user_id).first()
+    target_user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == payload.user_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if target_user is None:
         raise HTTPException(status_code=404, detail="目标用户不存在")
 

@@ -17,7 +17,11 @@ from app.schemas.user import User
 
 def authenticate_email(db: Session, email: str, password: str) -> TokenResponse:
     """邮箱密码登录：校验 bcrypt 哈希密码并返回 JWT。"""
-    user = db.query(UserModel).filter(UserModel.email == email).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.email == email, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None or user.hashed_password is None or not verify_password(password, user.hashed_password):
         raise ValueError("邮箱或密码错误")
 
@@ -32,7 +36,11 @@ def authenticate_email(db: Session, email: str, password: str) -> TokenResponse:
 
 def create_user(db: Session, email: str, password: str | None = None, name: str | None = None) -> UserModel:
     """创建用户（注册用），密码使用 bcrypt 哈希。"""
-    if db.query(UserModel).filter(UserModel.email == email).first():
+    if (
+        db.query(UserModel)
+        .filter(UserModel.email == email, UserModel.is_deleted == 0)
+        .first()
+    ):
         raise ValueError("邮箱已存在")
 
     user = UserModel(
@@ -81,6 +89,7 @@ def create_verification_code(db: Session, email: str, purpose: str = "login") ->
             VerificationCode.used_at.is_(None),
             VerificationCode.expires_at > datetime.now(timezone.utc),
             VerificationCode.created_at > cutoff,
+            VerificationCode.is_deleted == 0,
         )
         .count()
     )
@@ -114,6 +123,7 @@ def verify_email_code(db: Session, email: str, code: str, purpose: str = "login"
             VerificationCode.purpose == purpose,
             VerificationCode.used_at.is_(None),
             VerificationCode.expires_at > datetime.now(timezone.utc),
+            VerificationCode.is_deleted == 0,
         )
         .order_by(VerificationCode.created_at.desc())
         .first()
@@ -124,7 +134,11 @@ def verify_email_code(db: Session, email: str, code: str, purpose: str = "login"
     record.used_at = datetime.now(timezone.utc)
     db.commit()
 
-    user = db.query(UserModel).filter(UserModel.email == email).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.email == email, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None:
         random_password = secrets.token_urlsafe(32)
         user = create_user(db, email=email, password=random_password, name=email.split("@")[0])
@@ -154,7 +168,11 @@ def refresh_access_token(db: Session, refresh_token: str) -> TokenResponse:
     except JWTError as exc:
         raise ValueError("无效的 refresh token") from exc
 
-    user = db.query(UserModel).filter(UserModel.public_id == public_id).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == public_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None:
         raise ValueError("用户不存在")
     if not user.is_active:

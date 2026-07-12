@@ -83,7 +83,11 @@ async def get_current_user_info(
     """获取当前登录用户的完整信息。"""
     from app.models.user import User as UserModel
 
-    db_user = db.query(UserModel).filter(UserModel.public_id == user.id).first()
+    db_user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == user.id, UserModel.is_deleted == 0)
+        .first()
+    )
     if not db_user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
@@ -112,7 +116,11 @@ async def update_current_user(
     """修改当前用户的个人信息（昵称、头像）。"""
     from app.models.user import User as UserModel
 
-    db_user = db.query(UserModel).filter(UserModel.public_id == user.id).first()
+    db_user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == user.id, UserModel.is_deleted == 0)
+        .first()
+    )
     if not db_user:
         raise HTTPException(status_code=404, detail="用户不存在")
 
@@ -147,7 +155,11 @@ async def update_password(
     from app.core.security import get_password_hash, verify_password
     from app.models.user import User as UserModel
 
-    db_user = db.query(UserModel).filter(UserModel.public_id == user.id).first()
+    db_user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == user.id, UserModel.is_deleted == 0)
+        .first()
+    )
     if not db_user:
         raise HTTPException(status_code=404, detail="用户不存在")
 

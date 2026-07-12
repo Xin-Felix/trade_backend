@@ -6,6 +6,7 @@
 - [部署文档](deployment.md) — Docker Compose 一键部署、环境变量
 - [本地开发文档](development.md) — 本地 Python 环境、测试、代码规范
 - [数据库与数据同步](database.md) — 表结构、Alembic 迁移、Tushare 数据同步
+- [AI 每日复盘](daily-review.md) — 复盘功能实现与 DIY 修改指南
 
 快速入口：
 

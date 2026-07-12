@@ -365,18 +365,69 @@ def job_grant_monthly_points():
 
 
 def job_generate_daily_reviews(days: int = 1):
-    """为所有生效会员生成每日 AI 复盘。"""
-    from app.services.daily_review_service import generate_daily_reviews_for_all_members
-    from datetime import date, timedelta
+    """每日收盘后生成：
+    1. 全市场一句话复盘（免费用户共用）
+    2. 所有生效会员的深度复盘
+    仅交易日执行。
+    """
+    from datetime import date
+    from app.db.base import SessionLocal
+    from app.services.daily_review_service import generate_deep_reviews_for_all_members
+    from app.services.market_daily_review_service import generate_market_brief_sync
 
-    logger.info("[Scheduler] 开始生成每日会员复盘")
+    logger.info("[Scheduler] 开始生成全市场一句话复盘")
+    db = SessionLocal()
     try:
-        # days 参数仅用于兼容调度框架，实际使用今天日期
         report_date = date.today()
-        result = generate_daily_reviews_for_all_members(report_date=report_date)
-        logger.info(f"[Scheduler] 每日复盘生成完成: {result}")
+        market_report = generate_market_brief_sync(db, report_date)
+        logger.info(f"[Scheduler] 全市场一句话复盘生成完成: {market_report.status}")
     except Exception as e:
-        logger.error(f"[Scheduler] 每日复盘生成失败: {e}")
+        logger.error(f"[Scheduler] 全市场一句话复盘生成失败: {e}")
+    finally:
+        db.close()
+
+    logger.info("[Scheduler] 开始生成会员深度复盘")
+    try:
+        result = generate_deep_reviews_for_all_members(
+            report_date=report_date, skip_non_trading_day=True
+        )
+        logger.info(f"[Scheduler] 会员深度复盘生成完成: {result}")
+    except Exception as e:
+        logger.error(f"[Scheduler] 会员深度复盘生成失败: {e}")
+
+
+def job_generate_ai_position_advices(days: int = 1):
+    """为所有生效会员生成 AI 仓位建议（仅交易日执行）。"""
+    from app.services.ai_position_advice_service import generate_position_advices_for_all_members
+    from datetime import date
+
+    logger.info("[Scheduler] 开始生成 AI 仓位建议")
+    try:
+        report_date = date.today()
+        result = generate_position_advices_for_all_members(
+            report_date=report_date, skip_non_trading_day=True
+        )
+        logger.info(f"[Scheduler] AI 仓位建议生成完成: {result}")
+    except Exception as e:
+        logger.error(f"[Scheduler] AI 仓位建议生成失败: {e}")
+
+
+def job_generate_ai_morning_report(days: int = 1):
+    """生成每日 AI 晨报（仅交易日执行）。"""
+    from app.db.base import SessionLocal
+    from app.services.ai_morning_report_service import generate_morning_report_sync
+    from datetime import date
+
+    logger.info("[Scheduler] 开始生成 AI 晨报")
+    db = SessionLocal()
+    try:
+        report_date = date.today()
+        report = generate_morning_report_sync(db, report_date)
+        logger.info(f"[Scheduler] AI 晨报生成完成: {report.status}")
+    except Exception as e:
+        logger.error(f"[Scheduler] AI 晨报生成失败: {e}")
+    finally:
+        db.close()
 
 
 # ============================================================
@@ -408,6 +459,8 @@ JOB_REGISTRY: dict[str, callable] = {
     "expire_memberships": job_expire_memberships,
     "grant_monthly_points": job_grant_monthly_points,
     "generate_daily_reviews": job_generate_daily_reviews,
+    "generate_ai_position_advices": job_generate_ai_position_advices,
+    "generate_ai_morning_report": job_generate_ai_morning_report,
 }
 
 JOB_DESCRIPTIONS: dict[str, str] = {
@@ -436,7 +489,9 @@ JOB_DESCRIPTIONS: dict[str, str] = {
     # 会员
     "expire_memberships": "[会员] 每日过期会员处理",
     "grant_monthly_points": "[会员] 每日月度积分发放",
-    "generate_daily_reviews": "[AI] 每日自动生成会员复盘",
+    "generate_daily_reviews": "[AI] 每日自动生成全市场一句话复盘 + 会员深度复盘",
+    "generate_ai_position_advices": "[AI] 每日自动生成会员仓位建议",
+    "generate_ai_morning_report": "[AI] 每日自动生成市场晨报",
 }
 
 

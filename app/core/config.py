@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     oss_access_key_secret: str = ""
     oss_bucket_name: str = "ying-trade"
     oss_endpoint: str = "https://oss-cn-hangzhou.aliyuncs.com"
-    oss_custom_domain: str = "ying-trade.cn-hangzhou.taihangrda.cn"  # CNAME 自定义域名（用于生成访问 URL）
+    oss_custom_domain: str = "ying-trade.oss-cn-hangzhou.aliyuncs.com"  # CNAME 自定义域名（用于生成访问 URL）
     oss_sign_expire: int = 3600  # 签名 URL 有效期（秒），默认 1 小时
 
     # AI 模型配置

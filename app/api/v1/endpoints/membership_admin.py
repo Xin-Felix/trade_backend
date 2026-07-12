@@ -31,7 +31,11 @@ router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 def _get_db_user(db: Session, public_id: str) -> UserModel:
-    user = db.query(UserModel).filter(UserModel.public_id == public_id).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == public_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="用户不存在")
     return user
@@ -105,7 +109,11 @@ async def delete_tier(
 
 
 def _order_to_dict(order, db: Session) -> dict:
-    user = db.query(UserModel).filter(UserModel.id == order.user_id).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.id == order.user_id, UserModel.is_deleted == 0)
+        .first()
+    )
     return {
         "id": order.id,
         "user_id": order.user_id,
@@ -132,9 +140,15 @@ async def list_orders(
     db: Session = Depends(get_db),
 ):
     """获取订阅订单列表。"""
-    query = db.query(membership_service.SubscriptionOrder)
+    query = db.query(membership_service.SubscriptionOrder).filter(
+        membership_service.SubscriptionOrder.is_deleted == 0
+    )
     if user_id:
-        target = db.query(UserModel).filter(UserModel.public_id == user_id).first()
+        target = (
+            db.query(UserModel)
+            .filter(UserModel.public_id == user_id, UserModel.is_deleted == 0)
+            .first()
+        )
         if target is None:
             return SubscriptionOrderListResponse(data=[])
         query = query.filter(membership_service.SubscriptionOrder.user_id == target.id)
@@ -157,13 +171,18 @@ async def create_order(
     db: Session = Depends(get_db),
 ):
     """创建订阅订单。"""
-    target = db.query(UserModel).filter(UserModel.public_id == payload.user_id).first()
+    target = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == payload.user_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if target is None:
         raise HTTPException(status_code=404, detail="目标用户不存在")
 
     membership_service.create_order(db, **{**payload.model_dump(), "user_id": target.id})
     orders = (
         db.query(membership_service.SubscriptionOrder)
+        .filter(membership_service.SubscriptionOrder.is_deleted == 0)
         .order_by(membership_service.SubscriptionOrder.created_at.desc())
         .all()
     )
@@ -200,7 +219,11 @@ async def confirm_order(
 
 
 def _membership_to_dict(membership, db: Session) -> dict:
-    user = db.query(UserModel).filter(UserModel.id == membership.user_id).first()
+    user = (
+        db.query(UserModel)
+        .filter(UserModel.id == membership.user_id, UserModel.is_deleted == 0)
+        .first()
+    )
     return {
         "id": membership.id,
         "user_id": membership.user_id,
@@ -227,7 +250,11 @@ async def list_user_memberships(
     """获取用户会员记录列表。"""
     db_user_id = None
     if user_id:
-        target = db.query(UserModel).filter(UserModel.public_id == user_id).first()
+        target = (
+            db.query(UserModel)
+            .filter(UserModel.public_id == user_id, UserModel.is_deleted == 0)
+            .first()
+        )
         if target is None:
             return UserMembershipListResponse(data=[])
         db_user_id = target.id
@@ -251,7 +278,11 @@ async def grant_membership(
 ):
     """管理员手工开通会员。"""
     operator = _get_db_user(db, current_user.id)
-    target = db.query(UserModel).filter(UserModel.public_id == payload.user_id).first()
+    target = (
+        db.query(UserModel)
+        .filter(UserModel.public_id == payload.user_id, UserModel.is_deleted == 0)
+        .first()
+    )
     if target is None:
         raise HTTPException(status_code=404, detail="目标用户不存在")
 

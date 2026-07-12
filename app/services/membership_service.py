@@ -38,6 +38,7 @@ def get_active_membership(db: Session, user_id: int) -> UserMembership | None:
             UserMembership.user_id == user_id,
             UserMembership.status == "active",
             UserMembership.expires_at > now,
+            UserMembership.is_deleted == 0,
         )
         .order_by(UserMembership.expires_at.desc())
         .first()
@@ -63,6 +64,7 @@ def _get_today_usage(
             UserFeatureUsage.user_id == user_id,
             UserFeatureUsage.feature_code == feature_code,
             UserFeatureUsage.usage_date == date.today(),
+            UserFeatureUsage.is_deleted == 0,
         )
         .with_for_update()
         .first()
@@ -93,6 +95,7 @@ def get_today_usage_count(db: Session, user_id: int, feature_code: str) -> int:
             UserFeatureUsage.user_id == user_id,
             UserFeatureUsage.feature_code == feature_code,
             UserFeatureUsage.usage_date == date.today(),
+            UserFeatureUsage.is_deleted == 0,
         )
         .first()
     )
@@ -112,6 +115,7 @@ def _has_consumed_today(db: Session, user_id: int, feature_code: str) -> bool:
             PointRecord.type == "use",
             PointRecord.created_at >= start_of_today,
             PointRecord.created_at < end_of_today,
+            PointRecord.is_deleted == 0,
         )
         .scalar()
         or 0
@@ -514,7 +518,7 @@ def list_user_memberships(
     limit: int = 20,
 ) -> tuple[list[UserMembership], int]:
     """查询用户会员记录列表。"""
-    query = db.query(UserMembership)
+    query = db.query(UserMembership).filter(UserMembership.is_deleted == 0)
     if user_id is not None:
         query = query.filter(UserMembership.user_id == user_id)
     if status:
@@ -532,7 +536,9 @@ def list_user_memberships(
 
 def cancel_membership(db: Session, membership_id: int) -> None:
     """取消会员（标记为 cancelled，不续费）。"""
-    membership = db.query(UserMembership).filter(UserMembership.id == membership_id).first()
+    membership = db.query(UserMembership).filter(
+        UserMembership.id == membership_id, UserMembership.is_deleted == 0
+    ).first()
     if membership is None:
         raise ValueError("会员记录不存在")
     membership.status = "cancelled"
@@ -549,7 +555,11 @@ def expire_memberships(db: Session) -> int:
     now = datetime.now(timezone.utc)
     result = (
         db.query(UserMembership)
-        .filter(UserMembership.status == "active", UserMembership.expires_at <= now)
+        .filter(
+            UserMembership.status == "active",
+            UserMembership.expires_at <= now,
+            UserMembership.is_deleted == 0,
+        )
         .update({"status": "expired"}, synchronize_session=False)
     )
     db.commit()
@@ -566,6 +576,7 @@ def grant_monthly_points_if_due(db: Session) -> int:
         .filter(
             UserMembership.status == "active",
             UserMembership.expires_at > now,
+            UserMembership.is_deleted == 0,
             (
                 (UserMembership.last_grant_at.is_(None))
                 | (UserMembership.last_grant_at <= thirty_days_ago)
@@ -574,8 +585,19 @@ def grant_monthly_points_if_due(db: Session) -> int:
         .all()
     )
 
+    # 预加载未删除用户，避免为已删除用户发放积分
+    user_ids = {m.user_id for m in memberships}
+    active_user_ids = {
+        u.id
+        for u in db.query(UserModel.id).filter(
+            UserModel.id.in_(user_ids), UserModel.is_deleted == 0
+        )
+    }
+
     count = 0
     for m in memberships:
+        if m.user_id not in active_user_ids:
+            continue
         tier = get_tier_by_code(db, m.tier_code)
         if tier is None or tier.monthly_points_grant <= 0:
             continue

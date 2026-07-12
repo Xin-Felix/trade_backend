@@ -3,14 +3,21 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import (
     admin,
     ai,
+    ai_morning_report,
+    ai_morning_report_admin,
+    ai_position_advice,
+    ai_position_advice_admin,
     analytics,
     auth,
     daily_quote,
+    daily_review,
+    daily_review_admin,
     data_browser,
     datasource,
     global_market,
     h5_page,
     limit_up_admin,
+    market_daily_review_admin,
     membership,
     membership_admin,
     points,
@@ -37,6 +44,13 @@ api_router.include_router(membership.router, prefix="/membership", tags=["会员
 api_router.include_router(points.router, prefix="/points", tags=["积分"])
 api_router.include_router(h5_page.router, prefix="/h5-pages", tags=["H5页面管理"])
 api_router.include_router(daily_quote.router, prefix="/daily-quotes", tags=["每日一言"])
+api_router.include_router(daily_review.router, prefix="/daily-reviews", tags=["每日复盘"])
+api_router.include_router(daily_review_admin.router, prefix="/admin/daily-reviews", tags=["每日复盘管理"])
+api_router.include_router(market_daily_review_admin.router, prefix="/admin/market-daily-reviews", tags=["全市场一句话复盘管理"])
+api_router.include_router(ai_position_advice.router, prefix="/ai-position-advices", tags=["AI仓位建议"])
+api_router.include_router(ai_position_advice_admin.router, prefix="/admin/ai-position-advices", tags=["AI仓位建议管理"])
+api_router.include_router(ai_morning_report.router, prefix="/ai-morning-reports", tags=["AI晨报"])
+api_router.include_router(ai_morning_report_admin.router, prefix="/admin/ai-morning-reports", tags=["AI晨报管理"])
 api_router.include_router(data_browser.router, prefix="/data", tags=["数据浏览"])
 api_router.include_router(scheduler.router, prefix="/scheduler", tags=["调度管理"])
 api_router.include_router(datasource.router, prefix="/datasource", tags=["数据源管理"])

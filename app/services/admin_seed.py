@@ -312,6 +312,55 @@ _SEED_MENUS = [
         "menu_type": 1,
         "rank": 2,
     },
+    # ====== AI 内容管理 ======
+    {
+        "id": 52,
+        "parent_id": 0,
+        "path": "/ai-content",
+        "name": None,
+        "component": None,
+        "redirect": "/ai-content/daily-review/index",
+        "title": "AI 内容管理",
+        "icon": "ep:data-analysis",
+        "menu_type": 0,
+        "rank": 9,
+    },
+    {
+        "id": 51,
+        "parent_id": 52,
+        "path": "/ai-content/daily-review/index",
+        "name": "DailyReview",
+        "component": "daily-review/index",
+        "redirect": None,
+        "title": "每日自动复盘",
+        "icon": "ep:memo",
+        "menu_type": 1,
+        "rank": 1,
+    },
+    {
+        "id": 53,
+        "parent_id": 52,
+        "path": "/ai-content/position-advice/index",
+        "name": "AiPositionAdvice",
+        "component": "ai-content/position-advice/index",
+        "redirect": None,
+        "title": "AI 仓位建议",
+        "icon": "ep:pie-chart",
+        "menu_type": 1,
+        "rank": 2,
+    },
+    {
+        "id": 54,
+        "parent_id": 52,
+        "path": "/ai-content/morning-report/index",
+        "name": "AiMorningReport",
+        "component": "ai-content/morning-report/index",
+        "redirect": None,
+        "title": "AI 晨报",
+        "icon": "ep:sunrise",
+        "menu_type": 1,
+        "rank": 3,
+    },
 ]
 
 
@@ -324,10 +373,30 @@ def seed_admin_menus(db: Session) -> None:
             db.add(AdminRole(**role_data))
     db.commit()
 
+    # 清理已合并/废弃的菜单（如原来的 "AI 复盘管理" 父目录）
+    obsolete_menu_ids = {50}
+    seed_menu_ids = {m["id"] for m in _SEED_MENUS}
+    obsolete_menu_ids -= seed_menu_ids
+    for obsolete_id in obsolete_menu_ids:
+        obsolete = db.query(AdminMenu).filter(AdminMenu.id == obsolete_id).first()
+        if obsolete:
+            db.delete(obsolete)
+    if obsolete_menu_ids:
+        db.commit()
+
     # 种子菜单：只插入不存在的菜单，保留后台手动修改（图标、标题等）
+    # 对已存在的菜单，同步可能影响菜单结构的字段（parent_id、path、rank 等）
+    structural_fields = ("parent_id", "path", "name", "component", "redirect", "menu_type", "rank")
     for menu_data in _SEED_MENUS:
         existing = db.query(AdminMenu).filter(AdminMenu.id == menu_data["id"]).first()
         if existing:
+            for field in structural_fields:
+                seed_value = menu_data.get(field)
+                if seed_value is None:
+                    continue
+                current_value = getattr(existing, field)
+                if current_value != seed_value:
+                    setattr(existing, field, seed_value)
             continue
         menu = AdminMenu(
             id=menu_data["id"],
@@ -400,6 +469,8 @@ _SEED_MEMBERSHIP_TIERS = [
         "features": [
             "ai_chat",
             "ai_stock_analyze",
+            "ai_daily_review_deep",
+            "ai_position_advice",
             "analytics_concept_flow",
             "limit_up_ladder",
             "sector_moneyflow",
@@ -426,6 +497,11 @@ _SEED_FEATURE_PERMISSIONS = [
     {"code": "ai_chat", "name": "AI 对话", "required_points": 50, "free_daily_limit": 3, "consume_mode": "per_call"},
     {"code": "ai_stock_analyze", "name": "AI 个股分析", "required_points": 80, "free_daily_limit": 0, "consume_mode": "per_call"},
     {"code": "ai_global_impact", "name": "AI 国际市场影响", "required_points": 100, "free_daily_limit": 0, "consume_mode": "per_call"},
+    {"code": "ai_daily_review_brief", "name": "AI 每日复盘（一句话）", "required_points": 0, "free_daily_limit": 0, "consume_mode": "per_call"},
+    {"code": "ai_daily_review_standard", "name": "AI 每日复盘（标准）", "required_points": 100, "free_daily_limit": 0, "consume_mode": "per_call"},
+    {"code": "ai_daily_review_deep", "name": "AI 每日复盘（深度）", "required_points": 0, "free_daily_limit": 0, "consume_mode": "per_call", "required_tier": "vip"},
+    {"code": "ai_position_advice", "name": "AI 仓位建议", "required_points": 100, "free_daily_limit": 0, "consume_mode": "per_day"},
+    {"code": "ai_morning_report", "name": "AI 晨报", "required_points": 0, "free_daily_limit": 0, "consume_mode": "per_day"},
     {"code": "analytics_concept_flow", "name": "板块/个股资金流", "required_points": 30, "free_daily_limit": 0, "consume_mode": "per_day"},
     {"code": "limit_up_ladder", "name": "涨停板天梯", "required_points": 50, "free_daily_limit": 0, "consume_mode": "per_day"},
     {"code": "sector_moneyflow", "name": "板块资金流排行", "required_points": 30, "free_daily_limit": 0, "consume_mode": "per_day"},
@@ -442,6 +518,15 @@ def seed_membership_data(db: Session) -> None:
     for tier_data in _SEED_MEMBERSHIP_TIERS:
         existing = db.query(MembershipTier).filter(MembershipTier.code == tier_data["code"]).first()
         if existing:
+            # 已存在时，把种子中新增的功能补充进去（不删除人工修改）
+            existing_features = set(existing.features or [])
+            seed_features = set(tier_data.get("features") or [])
+            if "*" in seed_features:
+                existing.features = ["*"]
+            else:
+                merged = list(existing_features | seed_features)
+                if merged != existing.features:
+                    existing.features = merged
             continue
         db.add(MembershipTier(**tier_data))
     db.commit()
@@ -450,6 +535,11 @@ def seed_membership_data(db: Session) -> None:
     for fp_data in _SEED_FEATURE_PERMISSIONS:
         existing = db.query(FeaturePermission).filter(FeaturePermission.code == fp_data["code"]).first()
         if existing:
+            # 同步关键字段，确保新功能权限约束生效
+            if "required_tier" in fp_data and existing.required_tier != fp_data["required_tier"]:
+                existing.required_tier = fp_data["required_tier"]
+            if "required_points" in fp_data and existing.required_points != fp_data["required_points"]:
+                existing.required_points = fp_data["required_points"]
             continue
         db.add(FeaturePermission(**fp_data, enabled=1, consume_points=1))
     db.commit()

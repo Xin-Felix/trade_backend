@@ -1,9 +1,10 @@
 from sqlalchemy import Column, DateTime, Integer, String, func
 
 from app.db.base import Base
+from app.models.mixins import SoftDeleteMixin
 
 
-class VerificationCode(Base):
+class VerificationCode(SoftDeleteMixin, Base):
     __tablename__ = "verification_codes"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

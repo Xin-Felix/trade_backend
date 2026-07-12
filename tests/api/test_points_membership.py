@@ -232,12 +232,16 @@ class TestMembershipAdminAPI:
                 db.add(tier)
                 db.commit()
                 db.refresh(tier)
+
+            user_public_id = user.public_id
+            tier_code = tier.code
+            tier_price = tier.price
         finally:
             db.close()
 
         response = client.post(
             "/api/v1/admin/membership/orders",
-            json={"user_id": user.id, "tier_code": tier.code, "amount": tier.price},
+            json={"user_id": user_public_id, "tier_code": tier_code, "amount": tier_price},
             headers=headers,
         )
         assert response.status_code == 200
@@ -278,12 +282,15 @@ class TestMembershipAdminAPI:
                 db.add(tier)
                 db.commit()
                 db.refresh(tier)
+
+            user_public_id = user.public_id
+            tier_code = tier.code
         finally:
             db.close()
 
         response = client.post(
             "/api/v1/admin/membership/users/grant",
-            json={"user_id": user.id, "tier_code": tier.code, "duration_days": 30},
+            json={"user_id": user_public_id, "tier_code": tier_code, "duration_days": 30},
             headers=headers,
         )
         assert response.status_code == 200

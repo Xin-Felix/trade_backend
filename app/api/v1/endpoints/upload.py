@@ -112,7 +112,11 @@ async def upload_avatar(
 
     db = SessionLocal()
     try:
-        db_user = db.query(UserModel).filter(UserModel.public_id == user.id).first()
+        db_user = (
+            db.query(UserModel)
+            .filter(UserModel.public_id == user.id, UserModel.is_deleted == 0)
+            .first()
+        )
         if db_user:
             # 删除旧头像
             old_avatar = db_user.avatar

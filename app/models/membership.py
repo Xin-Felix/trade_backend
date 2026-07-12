@@ -13,14 +13,15 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
 
 from app.db.base import Base
+from app.models.mixins import SoftDeleteMixin
 
 
 class MembershipTier(Base):
@@ -45,7 +46,7 @@ class MembershipTier(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
-class UserMembership(Base):
+class UserMembership(SoftDeleteMixin, Base):
     """用户会员记录表"""
 
     __tablename__ = "user_memberships"
@@ -66,7 +67,7 @@ class UserMembership(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
-class SubscriptionOrder(Base):
+class SubscriptionOrder(SoftDeleteMixin, Base):
     """订阅订单表"""
 
     __tablename__ = "subscription_orders"
@@ -89,7 +90,7 @@ class SubscriptionOrder(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
-class UserFeatureUsage(Base):
+class UserFeatureUsage(SoftDeleteMixin, Base):
     """用户功能每日使用计数表"""
 
     __tablename__ = "user_feature_usage"
@@ -101,5 +102,12 @@ class UserFeatureUsage(Base):
     count = Column(Integer, nullable=False, server_default="0", comment="当日使用次数")
 
     __table_args__ = (
-        UniqueConstraint("user_id", "feature_code", "usage_date", name="uix_user_feature_usage"),
+        Index(
+            "uix_user_feature_usage_active",
+            "user_id",
+            "feature_code",
+            "usage_date",
+            unique=True,
+            postgresql_where="is_deleted = 0",
+        ),
     )
