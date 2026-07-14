@@ -291,6 +291,69 @@ async def sync_intraday_data(
     }
 
 
+@router.post("/intraday/snapshot")
+async def trigger_realtime_snapshot(
+    user: User = Depends(get_current_user),
+) -> dict:
+    """手动触发一次实时分时快照采集（akshare全市场快照，约5-10秒完成）。
+
+    适用于盘中随时手动刷新最新分时数据，无需等待定时任务。
+    """
+    import threading
+    from app.analytics.intraday_sync import sync_realtime_snapshot
+
+    t = threading.Thread(target=sync_realtime_snapshot, daemon=True)
+    t.start()
+
+    return {
+        "success": True,
+        "data": {
+            "status": "started",
+            "message": "实时快照采集已触发（约5-10秒完成）",
+        },
+    }
+
+
+@router.get("/intraday/progress")
+async def intraday_sync_progress(
+    user: User = Depends(get_current_user),
+) -> dict:
+    """查看分时数据采集进度（基于数据库 diff）。
+
+    返回全市场股票中有多少已有完整分时数据、还有多少待采集。
+    """
+    from app.analytics.intraday_sync import _get_completed_codes, _get_recent_trade_dates
+
+    trade_dates = _get_recent_trade_dates(n=5)
+    if not trade_dates:
+        return {"success": True, "data": {"trade_dates": [], "completed": 0, "total": 0, "pending": 0, "percent": 0}}
+
+    completed_codes = _get_completed_codes(trade_dates)
+
+    # 估算总数
+    db = SessionLocal()
+    try:
+        total = db.execute(text(
+            "SELECT COUNT(*) FROM stock_basic WHERE ts_code NOT LIKE '8%' AND ts_code NOT LIKE '4%'"
+        )).scalar() or 0
+    finally:
+        db.close()
+
+    completed = len(completed_codes)
+    pending = max(0, total - completed)
+
+    return {
+        "success": True,
+        "data": {
+            "trade_dates": trade_dates,
+            "completed": completed,
+            "total": total,
+            "pending": pending,
+            "percent": round(completed / total * 100, 1) if total > 0 else 0,
+        },
+    }
+
+
 @router.get("/intraday/status")
 async def intraday_status(
     trade_date: Optional[str] = Query(None, description="交易日期 YYYY-MM-DD"),

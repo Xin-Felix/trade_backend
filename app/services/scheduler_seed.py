@@ -229,7 +229,7 @@ _SEED_JOBS = [
         "job_id": "generate_daily_reviews",
         "description": "AI 每日会员复盘",
         "trigger_type": "cron",
-        "cron_hour": 17,
+        "cron_hour": 19,
         "cron_minute": 0,
         "cron_day_of_week": "mon-fri",
         "days": 1,

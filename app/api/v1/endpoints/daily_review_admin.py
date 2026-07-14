@@ -137,12 +137,15 @@ async def manual_generate_daily_review(
 ):
     """手动触发复盘生成。
 
-    - 传 user_public_id：只为该用户生成（同步返回结果）。
-    - 不传 user_public_id：为所有 active 会员生成（后台线程执行，接口立即返回已启动）。
+    - 传 user_public_id：为该用户生成（后台线程执行，接口立即返回）。
+    - 不传 user_public_id：为所有 active 会员生成（后台线程执行，接口立即返回）。
     """
     if body is None:
         body = GenerateRequest()
     target_date = _parse_date(body.report_date) or date.today()
+    level = body.level or "standard"
+
+    import threading
 
     if body.user_public_id:
         user = (
@@ -152,19 +155,22 @@ async def manual_generate_daily_review(
         )
         if user is None:
             raise HTTPException(status_code=404, detail="用户不存在")
-        level = body.level or "standard"
-        report = await daily_review_service.generate_daily_review_for_user(
-            db, user.id, target_date, level=level, force=True
-        )
-        return OperationResponse(
-            message=f"复盘已生成，状态：{report.status}"
-        )
+        user_id = user.id
 
-    # 批量触发：后台线程执行，避免阻塞接口
-    import threading
+        def _run_single():
+            from app.db.base import SessionLocal
+            _db = SessionLocal()
+            try:
+                daily_review_service.generate_daily_review_for_user_sync(
+                    _db, user_id, target_date, level=level
+                )
+            finally:
+                _db.close()
 
-    level = body.level or "standard"
+        threading.Thread(target=_run_single, daemon=True).start()
+        return OperationResponse(message=f"复盘生成任务已启动，请稍后刷新查看结果")
 
+    # 批量触发
     def _run_job():
         daily_review_service.generate_daily_reviews_for_all_members(
             report_date=target_date, level=level
@@ -179,7 +185,7 @@ async def regenerate_daily_review(
     review_id: int,
     db: Session = Depends(get_db),
 ):
-    """重新生成指定复盘记录。"""
+    """重新生成指定复盘记录（后台执行，接口立即返回）。"""
     report = (
         db.query(DailyReview)
         .filter(DailyReview.id == review_id, DailyReview.is_deleted == 0)
@@ -188,10 +194,24 @@ async def regenerate_daily_review(
     if report is None:
         raise HTTPException(status_code=404, detail="复盘记录不存在")
 
-    new_report = await daily_review_service.generate_daily_review_for_user(
-        db, report.user_id, report.report_date, level=report.level, force=True
-    )
-    return OperationResponse(message=f"复盘已重新生成，状态：{new_report.status}")
+    user_id = report.user_id
+    report_date = report.report_date
+    level = report.level
+
+    import threading
+
+    def _run_regen():
+        from app.db.base import SessionLocal
+        _db = SessionLocal()
+        try:
+            daily_review_service.generate_daily_review_for_user_sync(
+                _db, user_id, report_date, level=level
+            )
+        finally:
+            _db.close()
+
+    threading.Thread(target=_run_regen, daemon=True).start()
+    return OperationResponse(message="复盘重新生成任务已启动，请稍后刷新查看结果")
 
 
 @router.put("/{review_id}", response_model=DailyReviewDetailResponse)
@@ -229,6 +249,8 @@ async def get_daily_review_watchlist(
         .first()
     )
     watchlist = daily_review_service.get_user_watchlist_data(db, report.user_id)
+    portfolio = watchlist.get("portfolio", [])
+    watchlist_only = watchlist.get("watchlist", [])
     return {
         "success": True,
         "data": {
@@ -236,8 +258,10 @@ async def get_daily_review_watchlist(
             "user_public_id": user.public_id if user else None,
             "user_email": user.email if user else None,
             "report_date": report.report_date.isoformat() if report.report_date else None,
-            "stocks": watchlist,
-            "stock_count": len(watchlist),
+            "portfolio": portfolio,
+            "watchlist": watchlist_only,
+            "portfolio_count": len(portfolio),
+            "watchlist_count": len(watchlist_only),
         },
     }
 
@@ -284,9 +308,19 @@ async def retry_failed_daily_reviews(
     level: Optional[str] = Query(None, description="层级 standard / deep，默认全部"),
     db: Session = Depends(get_db),
 ):
-    """重试指定日期的失败复盘记录。"""
+    """重试指定日期的失败复盘记录（后台执行，接口立即返回）。"""
     target_date = _parse_date(report_date) or date.today()
-    result = daily_review_service.retry_failed_reviews(db, target_date, level=level)
-    return OperationResponse(
-        message=f"重试完成：总数 {result['total']}，成功 {result['success']}，仍失败 {result['still_failed']}"
-    )
+
+    import threading
+
+    def _run_retry():
+        import asyncio
+        from app.db.base import SessionLocal
+        _db = SessionLocal()
+        try:
+            asyncio.run(daily_review_service.retry_failed_reviews(_db, target_date, level=level))
+        finally:
+            _db.close()
+
+    threading.Thread(target=_run_retry, daemon=True).start()
+    return OperationResponse(message="重试任务已启动，请稍后刷新查看结果")

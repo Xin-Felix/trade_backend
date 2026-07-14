@@ -111,3 +111,23 @@ async def update_limit_up_ladder_job(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"保存失败: {e}") from e
+
+
+@router.get("/data")
+async def get_limit_up_ladder_data(
+    trade_date: str | None = Query(None, min_length=8, max_length=8, description="交易日期 YYYYMMDD"),
+    top_n_concepts: int = Query(30, ge=1, le=100),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """获取涨停板天梯数据（管理端，不消费积分）。"""
+    from datetime import datetime as dt
+
+    from app.services import limit_up_service
+
+    target_date = None
+    if trade_date:
+        target_date = dt.strptime(trade_date, "%Y%m%d").date()
+    result = limit_up_service.get_limit_up_ladder(
+        trade_date=target_date, top_n_concepts=top_n_concepts
+    )
+    return {"success": True, "data": result}

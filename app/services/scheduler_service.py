@@ -332,6 +332,52 @@ def job_sync_intraday(days: int = 5):
         logger.error(f"[Scheduler] 分时K线同步失败: {e}")
 
 
+def job_sync_intraday_realtime(days: int = 1):
+    """盘中实时分时快照采集（每分钟调度）。
+
+    仅在交易时间（9:30-11:30, 13:00-15:00）内实际执行。
+    非交易时间自动跳过，不记录失败日志。
+
+    采集逻辑：
+    - 通过 akshare 批量快照接口拉取全市场当前价格
+    - 与上一分钟快照做差值计算增量数据
+    - 写入 stock_intraday 表
+    - 触发概念/行业资金流聚合计算
+    """
+    from datetime import datetime, time as dtime
+
+    now = datetime.now()
+    current_time = now.time()
+
+    # 只在交易时间内执行
+    morning_start = dtime(9, 30)
+    morning_end = dtime(11, 30)
+    afternoon_start = dtime(13, 0)
+    afternoon_end = dtime(15, 0)
+
+    is_trading_time = (
+        (morning_start <= current_time <= morning_end) or
+        (afternoon_start <= current_time <= afternoon_end)
+    )
+
+    if not is_trading_time:
+        logger.debug("[Scheduler] 非交易时间，跳过盘中分时采集")
+        return
+
+    # 周末跳过
+    if now.weekday() >= 5:
+        logger.debug("[Scheduler] 周末，跳过盘中分时采集")
+        return
+
+    logger.info(f"[Scheduler] 盘中分时快照采集 {now.strftime('%H:%M')}")
+    try:
+        from app.analytics.intraday_sync import sync_realtime_snapshot
+        sync_realtime_snapshot()
+        logger.info("[Scheduler] 盘中分时快照采集完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 盘中分时快照采集失败: {e}")
+
+
 def job_expire_memberships():
     """将会员到期记录标记为 expired。"""
     from app.db.base import SessionLocal
@@ -453,6 +499,7 @@ JOB_REGISTRY: dict[str, callable] = {
     "sync_macro": job_sync_macro,
     # 分时K线
     "sync_intraday": job_sync_intraday,
+    "sync_intraday_realtime": job_sync_intraday_realtime,
     # ETF/可转债
     "sync_etf_cb": job_sync_etf_cb,
     # 会员任务
@@ -485,13 +532,51 @@ JOB_DESCRIPTIONS: dict[str, str] = {
     # 综合
     "sync_all": "[综合] 盘后全量同步（K线+资金+龙虎榜+板块+指数）",
     # 分时
-    "sync_intraday": "[分时] 全A股1分钟K线（历史Tushare/当天akshare/16点后Tushare）",
+    "sync_intraday": "[盘后] 全A股分时K线历史补全（Tushare/akshare）",
+    "sync_intraday_realtime": "[盘中] 实时分时快照采集（每分钟，仅交易时间）",
     # 会员
     "expire_memberships": "[会员] 每日过期会员处理",
     "grant_monthly_points": "[会员] 每日月度积分发放",
     "generate_daily_reviews": "[AI] 每日自动生成全市场一句话复盘 + 会员深度复盘",
     "generate_ai_position_advices": "[AI] 每日自动生成会员仓位建议",
     "generate_ai_morning_report": "[AI] 每日自动生成市场晨报",
+}
+
+
+# ============================================================
+# 任务分组元数据（供数据中心页面分组展示）
+# ============================================================
+
+JOB_META: dict[str, dict] = {
+    # 盘后核心
+    "sync_daily_kline": {"group": "盘后核心", "desc": "日K线行情", "default_days": 1, "order": 1},
+    "sync_daily_basic": {"group": "盘后核心", "desc": "日线因子（PE/PB/换手率/市值）", "default_days": 1, "order": 2},
+    "sync_stock_moneyflow": {"group": "盘后核心", "desc": "个股资金流向", "default_days": 1, "order": 3},
+    "sync_sector_moneyflow": {"group": "盘后核心", "desc": "板块资金流（行业+概念）", "default_days": 1, "order": 4},
+    "sync_index_daily": {"group": "盘后核心", "desc": "指数日线行情", "default_days": 1, "order": 5},
+    "sync_moneyflow_hsgt": {"group": "盘后核心", "desc": "沪深港通资金流向", "default_days": 1, "order": 6},
+    "sync_stock_limit": {"group": "盘后核心", "desc": "涨跌停数据", "default_days": 1, "order": 7},
+    "sync_limit_data": {"group": "盘后核心", "desc": "打板数据（涨跌停+连板天梯+THS榜单）", "default_days": 1, "order": 8},
+    "sync_concept_hot": {"group": "盘后核心", "desc": "题材热点（DC概念+THS热榜+DC热榜）", "default_days": 1, "order": 9},
+    # 综合
+    "sync_all": {"group": "盘后核心", "desc": "盘后全量同步（K线+资金+龙虎榜+板块+指数）", "default_days": 1, "order": 10},
+    # 每日
+    "sync_etf_cb": {"group": "每日同步", "desc": "ETF+可转债（基础信息+份额+行情）", "default_days": 1, "order": 11},
+    "sync_research": {"group": "每日同步", "desc": "研报数据（券商金股+盈利预测）", "default_days": 3, "order": 12},
+    "sync_stock_basic": {"group": "每日同步", "desc": "股票基础信息+上市公司详情", "default_days": 1, "order": 13},
+    # 周/月
+    "sync_institution": {"group": "周期同步", "desc": "机构行为（北向持仓+股东人数+增减持+筹码+两融）", "default_days": 1, "order": 14},
+    "sync_macro": {"group": "周期同步", "desc": "宏观数据（指数估值+申万行业+CPI+PMI+LPR+社融）", "default_days": 1, "order": 15},
+    # 盘中
+    "sync_intraday_realtime": {"group": "盘中数据", "desc": "实时分时快照（每分钟，仅交易时间执行）", "default_days": 1, "order": 16},
+    "sync_intraday": {"group": "盘中数据", "desc": "分时K线历史补全（盘后Tushare拉取）", "default_days": 5, "order": 17},
+    # AI
+    "generate_ai_morning_report": {"group": "AI生成", "desc": "每日AI晨报", "default_days": 1, "order": 18},
+    "generate_daily_reviews": {"group": "AI生成", "desc": "全市场复盘 + 会员深度复盘", "default_days": 1, "order": 19},
+    "generate_ai_position_advices": {"group": "AI生成", "desc": "会员仓位建议", "default_days": 1, "order": 20},
+    # 会员
+    "expire_memberships": {"group": "会员管理", "desc": "过期会员处理", "default_days": 1, "order": 21},
+    "grant_monthly_points": {"group": "会员管理", "desc": "月度积分发放", "default_days": 1, "order": 22},
 }
 
 
@@ -557,6 +642,11 @@ def _apply_job_config(cfg):
     elif cfg.trigger_type == "interval":
         hours = cfg.interval_hours or 0
         minutes = cfg.interval_minutes or 30
+        trigger = IntervalTrigger(hours=hours, minutes=minutes)
+    elif cfg.trigger_type == "trading_interval":
+        # 盘中间隔模式：按分钟间隔触发，任务函数自行判断是否在交易时间内
+        minutes = cfg.interval_minutes or 1
+        hours = cfg.interval_hours or 0
         trigger = IntervalTrigger(hours=hours, minutes=minutes)
     else:
         raise ValueError(f"未知触发类型: {cfg.trigger_type}")
@@ -671,7 +761,7 @@ def toggle_job(job_id: str, enabled: bool) -> dict | None:
 
 
 def get_all_job_configs() -> list[dict]:
-    """获取数据库中所有任务配置（含运行状态）。"""
+    """获取数据库中所有任务配置（含运行状态和分组信息）。"""
     from app.db.base import SessionLocal
     from app.models.scheduler import SchedulerJob
 
@@ -689,7 +779,13 @@ def get_all_job_configs() -> list[dict]:
             else:
                 item["next_run_time"] = None
                 item["running"] = False
+            # 附加分组信息
+            meta = JOB_META.get(cfg.job_id, {})
+            item["group"] = meta.get("group", "其他")
+            item["order"] = meta.get("order", 99)
             result.append(item)
+        # 按 order 排序
+        result.sort(key=lambda x: x["order"])
         return result
     finally:
         db.close()
@@ -701,6 +797,30 @@ def get_available_jobs() -> list[dict]:
         {"job_id": k, "description": v}
         for k, v in JOB_DESCRIPTIONS.items()
     ]
+
+
+def get_available_jobs_grouped() -> list[dict]:
+    """获取所有任务按分组归类，供数据中心页面展示。
+
+    Returns:
+        [{"group": "盘后核心", "jobs": [{"job_id": ..., "desc": ..., "default_days": ...}, ...]}, ...]
+    """
+    from collections import OrderedDict
+
+    groups: OrderedDict[str, list[dict]] = OrderedDict()
+    # 按 order 排序
+    sorted_items = sorted(JOB_META.items(), key=lambda x: x[1].get("order", 99))
+    for job_id, meta in sorted_items:
+        group = meta["group"]
+        if group not in groups:
+            groups[group] = []
+        groups[group].append({
+            "job_id": job_id,
+            "desc": meta["desc"],
+            "default_days": meta.get("default_days", 1),
+        })
+
+    return [{"group": group_name, "jobs": jobs} for group_name, jobs in groups.items()]
 
 
 def run_job_now(job_id: str, days: int = 1) -> bool:

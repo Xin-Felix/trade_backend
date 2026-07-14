@@ -250,6 +250,7 @@ async def build_market_context(report_date: date) -> str:
         parts = [
             f"报告日期：{report_date.isoformat()}（使用最新交易日 {trade_date.isoformat()} 收盘数据）",
             _build_index_section(),
+            _build_global_market_section(),
             _build_sector_section(trade_date),
             _build_limit_up_section(trade_date),
             _build_hsgt_section(trade_date),
@@ -258,6 +259,32 @@ async def build_market_context(report_date: date) -> str:
         return "\n\n".join(parts)
     finally:
         db.close()
+
+
+def _build_global_market_section() -> str:
+    """构建国际市场片段（欧美盘对今日A股的影响参考）。"""
+    lines = ["国际市场（隔夜）："]
+    try:
+        from app.services import global_market_service
+
+        indices = global_market_service.get_global_indices()
+        if indices:
+            for item in indices:
+                pct = item.get("change_percent", 0)
+                lines.append(
+                    f"- {item.get('name')}（{item.get('market')}）: "
+                    f"{item.get('price')} ({pct:+.2f}%)"
+                )
+        commodities = global_market_service.get_commodities_and_forex()
+        if commodities:
+            for item in commodities:
+                pct = item.get("change_percent", 0)
+                lines.append(
+                    f"- {item.get('name')}: {item.get('price')} ({pct:+.2f}%)"
+                )
+    except Exception as exc:
+        lines.append(f"国际市场数据获取失败：{exc}")
+    return "\n".join(lines) if len(lines) > 1 else "国际市场：暂无数据。"
 
 
 async def _generate_morning_report_content(report_date: date, context: str) -> dict:

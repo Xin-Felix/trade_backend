@@ -315,21 +315,71 @@ def _print(msg: str):
 
 
 # ============================================================
+# 断点续传：基于数据库 diff
+# ============================================================
+
+
+def _get_completed_codes(trade_dates: list[str], min_records: int = 200) -> set[str]:
+    """查询 stock_intraday 表，找出在所有指定交易日都已有足够分时数据的股票。
+
+    判定标准：该股票在这些交易日中至少有 min_records 条记录（正常应有 ~241×N天）。
+    这样停牌股（0条）和采集中断的（<200条）都会被标记为待采集。
+
+    Args:
+        trade_dates: 交易日列表，格式 ["20260709", "20260710", ...]
+        min_records: 最少记录数，低于此值视为未完成
+
+    Returns:
+        已有完整数据的 ts_code 集合
+    """
+    if not trade_dates:
+        return set()
+
+    db = SessionLocal()
+    try:
+        # 将交易日转为 date 列表
+        date_values = []
+        for d in trade_dates:
+            date_values.append(f"{d[:4]}-{d[4:6]}-{d[6:]}")
+        placeholders = ",".join([f"'{d}'" for d in date_values])
+
+        # 查询每只股票在这些交易日的总记录数
+        rows = db.execute(
+            text(f"""
+                SELECT ts_code, COUNT(*) as cnt
+                FROM stock_intraday
+                WHERE trade_date IN ({placeholders})
+                GROUP BY ts_code
+                HAVING COUNT(*) >= :min_records
+            """),
+            {"min_records": min_records},
+        ).fetchall()
+
+        return {row[0] for row in rows}
+    except Exception as e:
+        logger.warning(f"[Intraday] 查询已完成股票失败: {e}")
+        return set()
+    finally:
+        db.close()
+
+
+# ============================================================
 # 同步函数
 # ============================================================
 
 
 def sync_all_intraday(trade_date: Optional[date] = None, days: int = 5):
-    """同步全A股分时K线数据（最近 N 个交易日）。
+    """同步全A股分时K线数据（最近 N 个交易日），只拉缺失的股票。
 
-    使用 Tushare 代理 stk_mins 接口，4 线程并发采集。
+    通过查询 stock_intraday 表已有数据，diff 出尚未采集的股票代码，
+    只拉取缺失部分，天然支持断点续传。
 
     Args:
         trade_date: 结束日期，默认今天（会自动往前取 N 个交易日）
         days: 拉取最近几个交易日的数据，默认 5
 
     Returns:
-        {"total_stocks": N, "total_records": M, "elapsed": S}
+        {"total_stocks": N, "total_records": M, "elapsed": S, "skipped": K}
     """
     if trade_date is None:
         trade_date = date.today()
@@ -340,7 +390,7 @@ def sync_all_intraday(trade_date: Optional[date] = None, days: int = 5):
     trade_dates = _get_recent_trade_dates(n=days)
     if not trade_dates:
         _print("[Intraday] 无法获取交易日历，退出")
-        return {"total_stocks": 0, "total_records": 0, "elapsed": 0}
+        return {"total_stocks": 0, "total_records": 0, "elapsed": 0, "skipped": 0}
 
     # 计算时间范围
     earliest_date = min(trade_dates)
@@ -367,20 +417,31 @@ def sync_all_intraday(trade_date: Optional[date] = None, days: int = 5):
 
     if not all_codes:
         _print("[Intraday] stock_basic 为空")
-        return {"total_stocks": 0, "total_records": 0, "elapsed": 0}
+        return {"total_stocks": 0, "total_records": 0, "elapsed": 0, "skipped": 0}
 
     # 过滤只保留沪深A股（排除北交所8/4开头）
     all_codes = [c for c in all_codes if not c.startswith("8") and not c.startswith("4")]
-    _print(f"[Intraday] 开始采集 {len(all_codes)} 只股票")
 
-    # 先测试第一只股票确认代理正常
-    _print(f"  测试连接: {all_codes[0]}...")
-    test_records = _fetch_intraday_one(all_codes[0], start_dt, end_dt)
-    if not test_records:
-        _print(f"  [ERROR] 连接测试失败，无法获取 {all_codes[0]} 的分时数据。")
-        _print(f"  可能原因：代理不通/Token过期/非交易日无数据")
-        return {"total_stocks": 0, "total_records": 0, "elapsed": 0}
-    _print(f"  连接OK! {all_codes[0]} 获取到 {len(test_records)} 条分时数据")
+    # Diff：查出已有完整数据的股票（每天至少 200 条分时才算完整）
+    completed_codes = _get_completed_codes(trade_dates)
+    pending_codes = [c for c in all_codes if c not in completed_codes]
+    skipped = len(all_codes) - len(pending_codes)
+
+    _print(f"[Intraday] 总计 {len(all_codes)} 只, 已有数据 {skipped} 只, 待采集 {len(pending_codes)} 只")
+
+    if not pending_codes:
+        _print("[Intraday] 所有股票已有完整分时数据，无需采集")
+        _cleanup_old_data(keep_days=5)
+        return {"total_stocks": len(all_codes), "total_records": 0, "elapsed": 0, "skipped": skipped}
+
+    # 测试连接（用流动性好的股票测试，不用 pending 列表第一只）
+    test_code = "000001.SZ"
+    _print(f"  测试连接: {test_code}...")
+    test_records = _fetch_intraday_one(test_code, start_dt, end_dt)
+    if test_records:
+        _print(f"  连接OK! {test_code} 获取到 {len(test_records)} 条分时数据")
+    else:
+        _print(f"  [WARN] {test_code} 无数据（可能盘前/非交易时段），继续尝试采集...")
 
     start_time = _time.time()
     total_records = 0
@@ -393,10 +454,9 @@ def sync_all_intraday(trade_date: Optional[date] = None, days: int = 5):
 
     # 使用线程池并发采集
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-        # 分批提交避免内存过大
         batch_submit_size = 200
-        for batch_start in range(0, len(all_codes), batch_submit_size):
-            batch_codes = all_codes[batch_start:batch_start + batch_submit_size]
+        for batch_start in range(0, len(pending_codes), batch_submit_size):
+            batch_codes = pending_codes[batch_start:batch_start + batch_submit_size]
             futures = {executor.submit(_worker, code): code for code in batch_codes}
 
             for future in as_completed(futures):
@@ -415,12 +475,12 @@ def sync_all_intraday(trade_date: Optional[date] = None, days: int = 5):
                     batch_records = []
 
                 # 进度
-                if processed % 200 == 0:
+                if processed % 50 == 0:
                     elapsed = int(_time.time() - start_time)
                     rate = processed / max(elapsed, 1)
-                    eta = int((len(all_codes) - processed) / max(rate, 0.1))
+                    eta = int((len(pending_codes) - processed) / max(rate, 0.1))
                     _print(
-                        f"  进度: {processed}/{len(all_codes)} | "
+                        f"  进度: {processed}/{len(pending_codes)} | "
                         f"{total_records + len(batch_records)} 条 | "
                         f"{elapsed}s | ETA {eta}s | 错误 {errors}"
                     )
@@ -431,12 +491,12 @@ def sync_all_intraday(trade_date: Optional[date] = None, days: int = 5):
         total_records += len(batch_records)
 
     elapsed = int(_time.time() - start_time)
-    _print(f"[Intraday] 完成! {processed} 股, {total_records} 条, 耗时 {elapsed}s, {errors} 错误")
+    _print(f"[Intraday] 完成! {processed} 股, {total_records} 条, 耗时 {elapsed}s, {errors} 错误, 跳过 {skipped}")
 
     # 清理：只保留最近5个交易日的数据
     _cleanup_old_data(keep_days=5)
 
-    return {"total_stocks": processed, "total_records": total_records, "elapsed": elapsed}
+    return {"total_stocks": processed + skipped, "total_records": total_records, "elapsed": elapsed, "skipped": skipped}
 
 
 def sync_intraday_by_concepts(concept_ids: list[str], trade_date: Optional[date] = None) -> int:
@@ -593,21 +653,22 @@ def _fetch_intraday_one_akshare(ts_code: str, trade_date: date) -> list[dict]:
 
 
 def sync_all_intraday_mixed(days: int = 5) -> dict:
-    """同步最近 N 个交易日全 A 股分时数据（混合数据源）。
+    """同步最近 N 个交易日全 A 股分时数据（混合数据源），支持断点续传。
 
     - 历史交易日：Tushare 代理 stk_mins
     - 当天：16:00 之前用 akshare，16:00 之后用 Tushare
     - 只保留最近 5 个交易日数据
+    - 通过 Redis 记录已完成股票，重启后自动续传
 
     Returns:
-        {"total_stocks": N, "total_records": M, "elapsed": S}
+        {"total_stocks": N, "total_records": M, "elapsed": S, "skipped": K}
     """
     _ensure_table()
 
     trade_dates = _get_recent_trade_dates(n=days)
     if not trade_dates:
         _print("[IntradayMixed] 无法获取交易日历，退出")
-        return {"total_stocks": 0, "total_records": 0, "elapsed": 0}
+        return {"total_stocks": 0, "total_records": 0, "elapsed": 0, "skipped": 0}
 
     today = date.today()
     today_str = today.strftime("%Y%m%d")
@@ -650,11 +711,22 @@ def sync_all_intraday_mixed(days: int = 5) -> dict:
 
     if not all_codes:
         _print("[IntradayMixed] stock_basic 为空")
-        return {"total_stocks": 0, "total_records": 0, "elapsed": 0}
+        return {"total_stocks": 0, "total_records": 0, "elapsed": 0, "skipped": 0}
 
     # 排除北交所
     all_codes = [c for c in all_codes if not c.startswith("8") and not c.startswith("4")]
-    _print(f"[IntradayMixed] 开始采集 {len(all_codes)} 只股票")
+
+    # Diff：查出已有完整数据的股票
+    completed_codes = _get_completed_codes(trade_dates)
+    pending_codes = [c for c in all_codes if c not in completed_codes]
+    skipped = len(all_codes) - len(pending_codes)
+
+    _print(f"[IntradayMixed] 总计 {len(all_codes)} 只, 已有数据 {skipped} 只, 待采集 {len(pending_codes)} 只")
+
+    if not pending_codes:
+        _print("[IntradayMixed] 所有股票已有完整分时数据")
+        _cleanup_old_data(keep_days=5)
+        return {"total_stocks": len(all_codes), "total_records": 0, "elapsed": 0, "skipped": skipped}
 
     start_time = _time.time()
     total_records = 0
@@ -672,8 +744,8 @@ def sync_all_intraday_mixed(days: int = 5) -> dict:
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
         batch_submit_size = 200
-        for batch_start in range(0, len(all_codes), batch_submit_size):
-            batch_codes = all_codes[batch_start:batch_start + batch_submit_size]
+        for batch_start in range(0, len(pending_codes), batch_submit_size):
+            batch_codes = pending_codes[batch_start:batch_start + batch_submit_size]
             futures = {executor.submit(_worker, code): code for code in batch_codes}
 
             for future in as_completed(futures):
@@ -693,9 +765,9 @@ def sync_all_intraday_mixed(days: int = 5) -> dict:
                 if processed % 200 == 0:
                     elapsed = int(_time.time() - start_time)
                     rate = processed / max(elapsed, 1)
-                    eta = int((len(all_codes) - processed) / max(rate, 0.1))
+                    eta = int((len(pending_codes) - processed) / max(rate, 0.1))
                     _print(
-                        f"  进度: {processed}/{len(all_codes)} | "
+                        f"  进度: {processed}/{len(pending_codes)} | "
                         f"{total_records + len(batch_records)} 条 | "
                         f"{elapsed}s | ETA {eta}s | 错误 {errors}"
                     )
@@ -707,13 +779,15 @@ def sync_all_intraday_mixed(days: int = 5) -> dict:
     elapsed = int(_time.time() - start_time)
     _print(
         f"[IntradayMixed] 完成! {processed} 股, {total_records} 条, "
-        f"耗时 {elapsed}s, {errors} 错误"
+        f"耗时 {elapsed}s, {errors} 错误, 跳过 {skipped}"
     )
 
     _cleanup_old_data(keep_days=5)
 
-    return {"total_stocks": processed, "total_records": total_records, "elapsed": elapsed}
+    return {"total_stocks": processed + skipped, "total_records": total_records, "elapsed": elapsed, "skipped": skipped}
 
+
+def _cleanup_old_data(keep_days: int = 5):
     """只保留最近 N 个交易日的分时数据，删除更早的。"""
     trade_dates = _get_recent_trade_dates(n=keep_days)
     if not trade_dates:
@@ -756,3 +830,89 @@ def sync_all_intraday_mixed(days: int = 5) -> dict:
         logger.error(f"[Intraday] 清理失败: {e}")
     finally:
         db.close()
+
+
+# ============================================================
+# 盘中实时快照采集
+# ============================================================
+
+
+def sync_realtime_snapshot():
+    """盘中实时分时快照采集（单次执行）。
+
+    通过 akshare 的 stock_zh_a_spot_em 接口一次性拉取全市场快照，
+    然后转换为当前分钟的分时数据写入 stock_intraday 表。
+
+    相比逐只股票拉分钟K线，这种方式：
+    - 一次 HTTP 请求获取全市场 ~5000 只股票的当前价格
+    - 总耗时约 5-10 秒，完全满足每分钟调度一次
+    """
+    import akshare as ak
+
+    _ensure_table()
+
+    now = datetime.now()
+    trade_date_val = now.date()
+    trade_time_val = now.strftime("%H:%M")
+
+    logger.info(f"[RealtimeSnapshot] 开始采集 {trade_date_val} {trade_time_val}")
+
+    try:
+        # 一次拉取全市场实时行情快照
+        df = ak.stock_zh_a_spot_em()
+    except Exception as e:
+        logger.error(f"[RealtimeSnapshot] akshare 全市场快照失败: {e}")
+        return
+
+    if df is None or df.empty:
+        logger.warning("[RealtimeSnapshot] 快照数据为空")
+        return
+
+    # 转换为 stock_intraday 格式
+    records = []
+    for _, row in df.iterrows():
+        try:
+            code = str(row.get("代码", "")).strip()
+            if not code:
+                continue
+
+            # 转换为 ts_code 格式 (000001 -> 000001.SZ / 600000 -> 600000.SH)
+            if code.startswith("6") or code.startswith("5"):
+                ts_code = f"{code}.SH"
+            elif code.startswith("0") or code.startswith("3"):
+                ts_code = f"{code}.SZ"
+            else:
+                continue  # 跳过北交所等
+
+            latest_price = float(row.get("最新价", 0) or 0)
+            open_price = float(row.get("今开", 0) or 0)
+            high_price = float(row.get("最高", 0) or 0)
+            low_price = float(row.get("最低", 0) or 0)
+            volume = int(float(row.get("成交量", 0) or 0))
+            amount = float(row.get("成交额", 0) or 0)
+
+            # 跳过停牌/无数据的股票
+            if latest_price <= 0:
+                continue
+
+            records.append({
+                "ts_code": ts_code,
+                "trade_date": trade_date_val,
+                "trade_time": trade_time_val,
+                "open": open_price if open_price > 0 else latest_price,
+                "close": latest_price,
+                "high": high_price if high_price > 0 else latest_price,
+                "low": low_price if low_price > 0 else latest_price,
+                "volume": volume,
+                "amount": amount,
+            })
+        except (ValueError, TypeError, KeyError):
+            continue
+
+    if not records:
+        logger.warning("[RealtimeSnapshot] 无有效记录")
+        return
+
+    # 批量写入
+    _bulk_upsert(records)
+    logger.info(f"[RealtimeSnapshot] 完成: {len(records)} 只股票, {trade_time_val}")

@@ -49,6 +49,31 @@ async def get_stock_quote(code: str, user: User = Depends(get_current_user)) -> 
     return stock_service.get_stock_quote(code)
 
 
+@router.get("/quotes")
+async def get_stock_quotes(
+    codes: str = Query(..., description="逗号分隔的股票代码，如 000001.SZ,600519.SH"),
+    user: User = Depends(get_current_user),
+) -> list[StockData]:
+    """批量获取多只股票最新行情，最多 50 只。"""
+    code_list = [c.strip() for c in codes.split(",") if c.strip()]
+    if len(code_list) > 50:
+        code_list = code_list[:50]
+    return stock_service.get_stock_quotes_batch(code_list)
+
+
+@router.get("/detail/{code}")
+async def get_stock_detail(
+    code: str,
+    user: User = Depends(get_current_user),
+) -> dict:
+    """聚合接口：一次返回股票详情页所需的多项数据。
+
+    包含：quote(行情) + daily_basic(因子) + concepts(概念) + moneyflow(资金流，最近5日)
+    减少 iOS 端进入详情页时的并发请求数（4→1）。
+    """
+    return stock_service.get_stock_detail(code)
+
+
 @router.get("/search")
 async def search_stocks(
     q: str = Query(..., min_length=1, description="搜索关键词：股票代码、名称或拼音缩写"),
@@ -381,3 +406,81 @@ async def get_stock_concepts(
 ) -> list[dict]:
     """获取某只股票所属的全部概念/题材板块（用于复盘分析）。"""
     return stock_service.get_stock_concepts(code)
+
+
+
+@router.post("/portfolio/import-text")
+async def import_portfolio_from_text(
+    body: dict,
+    user: User = Depends(get_current_user),
+) -> dict:
+    """通过 OCR 文本解析持仓并替换用户持仓列表。
+
+    请求体：
+        {"text": "OCR 识别出的持仓截图文本"}
+
+    返回：
+        {"success": True, "imported": [...], "total": N}
+    """
+    from app.services import ai_service
+
+    text = body.get("text", "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="缺少 text 字段")
+
+    # 使用 AI 解析持仓文本
+    prompt = f"""请从以下券商 App 持仓截图的 OCR 文本中提取所有股票持仓信息。
+
+要求：
+1. 提取每只股票的：代码(code)、名称(name)、成本价(cost_price，可选)、持仓数量(quantity，可选)
+2. 代码只保留纯数字部分（如 300054、600519、000001）
+3. 如果文本中有"融"字标记，设置 is_margin 为 true
+4. 忽略非持仓信息（如总资产、可用余额等）
+5. 返回 JSON 格式
+
+OCR 文本：
+{text}
+
+请以如下 JSON 格式返回：
+{{"items": [{{"code": "300054", "name": "鼎龙股份", "cost_price": 80.5, "quantity": 1000, "is_margin": false}}]}}"""
+
+    try:
+        result = await ai_service.analyze_json(
+            prompt=prompt,
+            role="market_analyst",
+            temperature=0.3,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"AI 解析失败: {str(exc)}")
+
+    items = result.get("items", [])
+    if not items:
+        raise HTTPException(status_code=400, detail="未能从文本中解析出持仓信息")
+
+    # 清空并替换用户持仓
+    imported = []
+    for item in items:
+        code = str(item.get("code", "")).strip()
+        name = str(item.get("name", "")).strip()
+        if not code or not name:
+            continue
+        cost_price = item.get("cost_price")
+        quantity = item.get("quantity")
+        is_margin = bool(item.get("is_margin", False))
+
+        # 先尝试删除已有的同代码持仓（静默）
+        portfolio_service.remove_from_portfolio(user.id, code)
+        # 重新添加
+        try:
+            portfolio_service.add_to_portfolio(
+                user.id, code, name,
+                cost_price=float(cost_price) if cost_price else None,
+                quantity=float(quantity) if quantity else None,
+                is_margin=is_margin,
+                limit=50,  # 导入时放宽限制
+            )
+            imported.append({"code": code, "name": name})
+        except Exception:
+            continue
+
+    return {"success": True, "imported": imported, "total": len(imported)}

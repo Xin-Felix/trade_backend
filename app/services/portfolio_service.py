@@ -10,7 +10,7 @@ from app.schemas.portfolio import PortfolioItem
 class PortfolioLimitExceededError(Exception):
     """持仓数量超过上限。"""
 
-    def __init__(self, limit: int = 10):
+    def __init__(self, limit: int = 20):
         self.limit = limit
         super().__init__(f"持仓最多可添加 {limit} 只，建议精简票池后再添加")
 
@@ -71,7 +71,7 @@ def add_to_portfolio(
     quantity: float | None = None,
     is_margin: bool | None = None,
     note: str | None = None,
-    limit: int = 10,
+    limit: int = 20,
 ) -> PortfolioItem:
     """添加持仓；已存在（含已软删除）则恢复或更新；达到上限时抛出异常。"""
     ts_code = _normalize_code(code)

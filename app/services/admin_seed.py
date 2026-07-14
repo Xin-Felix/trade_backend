@@ -83,26 +83,14 @@ _SEED_MENUS = [
     {
         "id": 11,
         "parent_id": 10,
-        "path": "/data/scheduler/index",
-        "name": "DataScheduler",
-        "component": "data/scheduler/index",
+        "path": "/data/center/index",
+        "name": "DataCenter",
+        "component": "data/center/index",
         "redirect": None,
-        "title": "定时任务",
+        "title": "数据中心",
         "icon": "ep:timer",
         "menu_type": 1,
         "rank": 1,
-    },
-    {
-        "id": 12,
-        "parent_id": 10,
-        "path": "/data/sync/index",
-        "name": "DataSync",
-        "component": "data/sync/index",
-        "redirect": None,
-        "title": "数据同步",
-        "icon": "ep:refresh",
-        "menu_type": 1,
-        "rank": 2,
     },
     {
         "id": 13,
@@ -114,7 +102,7 @@ _SEED_MENUS = [
         "title": "数据浏览",
         "icon": "ep:document",
         "menu_type": 1,
-        "rank": 3,
+        "rank": 2,
     },
     {
         "id": 15,
@@ -126,19 +114,7 @@ _SEED_MENUS = [
         "title": "数据源管理",
         "icon": "ep:connection",
         "menu_type": 1,
-        "rank": 4,
-    },
-    {
-        "id": 16,
-        "parent_id": 10,
-        "path": "/data/logs/index",
-        "name": "DataLogs",
-        "component": "data/logs/index",
-        "redirect": None,
-        "title": "执行日志",
-        "icon": "ep:document-checked",
-        "menu_type": 1,
-        "rank": 5,
+        "rank": 3,
     },
     # ====== 聚合数据（数据清理/汇总） ======
     {
@@ -151,7 +127,7 @@ _SEED_MENUS = [
         "title": "聚合数据",
         "icon": "ep:odometer",
         "menu_type": 0,
-        "rank": 6,
+        "rank": 4,
     },
     {
         "id": 19,
@@ -373,8 +349,8 @@ def seed_admin_menus(db: Session) -> None:
             db.add(AdminRole(**role_data))
     db.commit()
 
-    # 清理已合并/废弃的菜单（如原来的 "AI 复盘管理" 父目录）
-    obsolete_menu_ids = {50}
+    # 清理已合并/废弃的菜单（如原来的 "AI 复盘管理" 父目录、旧的数据同步/执行日志）
+    obsolete_menu_ids = {50, 12, 16}
     seed_menu_ids = {m["id"] for m in _SEED_MENUS}
     obsolete_menu_ids -= seed_menu_ids
     for obsolete_id in obsolete_menu_ids:
@@ -386,7 +362,7 @@ def seed_admin_menus(db: Session) -> None:
 
     # 种子菜单：只插入不存在的菜单，保留后台手动修改（图标、标题等）
     # 对已存在的菜单，同步可能影响菜单结构的字段（parent_id、path、rank 等）
-    structural_fields = ("parent_id", "path", "name", "component", "redirect", "menu_type", "rank")
+    structural_fields = ("parent_id", "path", "name", "component", "redirect", "title", "menu_type", "rank")
     for menu_data in _SEED_MENUS:
         existing = db.query(AdminMenu).filter(AdminMenu.id == menu_data["id"]).first()
         if existing:

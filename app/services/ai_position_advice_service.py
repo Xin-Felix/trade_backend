@@ -16,7 +16,6 @@ from app.models.membership import UserMembership
 from app.models.portfolio import Portfolio
 from app.models.user import User as UserModel
 from app.services import ai_service, stock_service
-from app.services.daily_review_service import build_watchlist_context
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +144,9 @@ def get_user_portfolio_data(db: Session, user_id: int) -> list[dict]:
 
 
 async def build_portfolio_context(db: Session, user_id: int, include_watchlist: bool = True) -> str:
-    """基于用户持仓组装 AI 上下文文本。"""
+    """基于用户持仓组装 AI 上下文文本（增强版：含市场全貌+持仓深度数据）。"""
+    from app.services.daily_review_service import build_market_context as build_daily_market_context
+
     user = (
         db.query(UserModel)
         .filter(UserModel.id == user_id, UserModel.is_deleted == 0)
@@ -161,80 +162,108 @@ async def build_portfolio_context(db: Session, user_id: int, include_watchlist: 
     )
     parts = [f"用户：{user.name or user.email}"]
 
+    # 通用市场数据
+    market_ctx = build_daily_market_context()
+    parts.append(market_ctx)
+
     if rows:
-        parts.append("当前持仓：")
+        # 持仓汇总
         total_position_value = 0.0
         total_cost_value = 0.0
         total_margin_value = 0.0
+        stock_lines = ["【持仓详情】"]
+
         for item in rows:
             try:
                 quote = stock_service.get_stock_quote(item.code)
-                basic_list = stock_service.get_daily_basic(item.code, limit=1)
-                extra = ""
-                if basic_list:
-                    b = basic_list[0]
-                    extra = f" | PE={b.get('pe')} PB={b.get('pb')} 换手={b.get('turnover_rate')}%"
                 price = quote.price if quote else None
                 change_percent = quote.change_percent if quote else None
                 cost_price = float(item.cost_price) if item.cost_price is not None else None
                 quantity = float(item.quantity) if item.quantity is not None else None
                 is_margin = bool(item.is_margin) if item.is_margin is not None else False
                 pnl = _calculate_pnl(price, cost_price, quantity)
-                position_value = pnl["position_value"]
-                cost_value = pnl["cost_value"]
-                unrealized_pnl = pnl["unrealized_pnl"]
-                pnl_percent = pnl["pnl_percent"]
-                if position_value is not None:
-                    total_position_value += position_value
-                if cost_value is not None:
-                    total_cost_value += cost_value
-                if is_margin and position_value is not None:
-                    total_margin_value += position_value
 
-                position_line = f"- {item.name}（{item.code}）: 现价 {price}, 涨跌幅 {change_percent}%"
-                if cost_price is not None and quantity is not None:
-                    position_line += (
-                        f" | 持仓 {quantity}股, 成本 {cost_price}, "
-                        f"浮盈/亏 {unrealized_pnl:+.2f} ({pnl_percent:+.2f}%)"
+                if pnl["position_value"] is not None:
+                    total_position_value += pnl["position_value"]
+                if pnl["cost_value"] is not None:
+                    total_cost_value += pnl["cost_value"]
+                if is_margin and pnl["position_value"] is not None:
+                    total_margin_value += pnl["position_value"]
+
+                # 持仓基础信息（只给百分比，不暴露金额）
+                stock_lines.append(f"\n▶ {item.name}（{item.code}）{'【融资】' if is_margin else ''}")
+                stock_lines.append(f"  当日: 现价={price} 涨跌幅={change_percent}%")
+                holding_info = f"  持仓: 成本={cost_price}"
+                if pnl["pnl_percent"] is not None:
+                    holding_info += f" 收益率={pnl['pnl_percent']:+.2f}%"
+                stock_lines.append(holding_info)
+
+                # 基本面
+                basic_list = stock_service.get_daily_basic(item.code, limit=1)
+                if basic_list:
+                    b = basic_list[0]
+                    stock_lines.append(
+                        f"  基本面: PE={b.get('pe')} PB={b.get('pb')} "
+                        f"换手率={b.get('turnover_rate')}% 量比={b.get('volume_ratio')}"
                     )
-                if is_margin:
-                    position_line += ", 融资: 是"
-                position_line += extra
-                parts.append(position_line)
-            except Exception as exc:
-                parts.append(f"- {item.name}（{item.code}）: 行情获取失败（{exc}）")
 
-        total_pnl = total_position_value - total_cost_value if total_cost_value else None
-        pnl_percent = (total_pnl / total_cost_value * 100) if total_cost_value else None
-        summary_parts = [f"持仓总市值: {total_position_value:.2f}"]
-        if total_cost_value:
-            summary_parts.append(f"总成本: {total_cost_value:.2f}")
-        if total_pnl is not None:
-            summary_parts.append(f"总浮盈/亏: {total_pnl:+.2f}")
-        if pnl_percent is not None:
-            summary_parts.append(f"总盈亏比例: {pnl_percent:+.2f}%")
-        if total_margin_value:
-            summary_parts.append(f"融资仓位市值: {total_margin_value:.2f}")
-        parts.append(" | ".join(summary_parts))
+                # 近5天日K
+                daily_klines = stock_service.get_klines(item.code, period="D", limit=5)
+                if daily_klines:
+                    stock_lines.append("  近5天日K：")
+                    for k in daily_klines:
+                        stock_lines.append(
+                            f"    {k.trade_date}: 开={k.open} 高={k.high} 低={k.low} 收={k.close}"
+                        )
+
+                # 近4周周K
+                weekly_klines = stock_service.get_klines(item.code, period="W", limit=4)
+                if weekly_klines:
+                    stock_lines.append("  近4周周K：")
+                    for k in weekly_klines:
+                        stock_lines.append(
+                            f"    {k.trade_date}: 开={k.open} 高={k.high} 低={k.low} 收={k.close}"
+                        )
+
+                # 资金流向
+                moneyflow = stock_service.get_stock_moneyflow(item.code, limit=3)
+                if moneyflow:
+                    stock_lines.append("  近3天资金流向（万元）：")
+                    for mf in moneyflow:
+                        net_lg = (mf.get("buy_lg_amount") or 0) - (mf.get("sell_lg_amount") or 0)
+                        net_elg = (mf.get("buy_elg_amount") or 0) - (mf.get("sell_elg_amount") or 0)
+                        stock_lines.append(
+                            f"    {mf.get('trade_date')}: 大单净={net_lg:.1f} "
+                            f"特大单净={net_elg:.1f} 总净流入={mf.get('net_mf_amount')}"
+                        )
+            except Exception as exc:
+                stock_lines.append(f"\n▶ {item.name}（{item.code}）: 数据获取失败（{exc}）")
+
+        # 持仓汇总（只给百分比）
+        total_pnl = total_position_value - total_cost_value if total_cost_value else 0
+        pnl_pct = (total_pnl / total_cost_value * 100) if total_cost_value else 0
+        summary = f"【持仓汇总】共{len(rows)}只 总收益率={pnl_pct:+.2f}%"
+        if total_margin_value and total_position_value:
+            summary += f" 融资占比={total_margin_value/total_position_value*100:.1f}%"
+        parts.append(summary)
+        parts.append("\n".join(stock_lines))
     else:
         parts.append("该用户当前没有持仓。")
 
-    if include_watchlist:
-        watchlist_context = await build_watchlist_context(db, user_id)
-        if watchlist_context and "没有自选股" not in watchlist_context:
-            parts.append("\n" + watchlist_context)
-
-    return "\n".join(parts)
+    return "\n\n".join(parts)
 
 
 async def _generate_advice_content(user: UserModel, context: str) -> dict:
     """调用 AI 生成仓位建议内容，返回 {"summary": ..., "content": ...}。"""
+    today = date.today()
     prompt = (
-        f"请为以下用户生成今日的仓位管理建议。\n"
+        f"请为以下用户生成仓位管理建议。\n"
+        f"今天日期：{today.isoformat()}\n"
         f"用户：{user.name or user.email}\n"
-        f"请结合其当前持仓的成本价、持仓数量、盈亏比例以及是否融资情况，"
-        f"给出结构化的仓位分析与调整建议。对融资仓位需额外关注杠杆风险，"
-        f"对亏损较大的持仓可建议止损或减仓。"
+        f"我已提供完整数据：市场全貌（大盘、国际、北向、板块）+ 持仓详情（成本/盈亏/K线/资金流向）。\n"
+        f"请结合市场环境和每只持仓的技术面、资金面、盈亏状况，给出具体的仓位调整建议。\n"
+        f"对融资仓位需额外关注杠杆风险和强平线距离。\n"
+        f"语调专业但亲切，像一位经验丰富的投顾朋友在帮你看盘。"
     )
     return await ai_service.analyze_json(
         prompt=prompt, role="position_advice", context=context, schema=ai_service.AiReportOutput

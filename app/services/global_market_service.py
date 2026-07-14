@@ -230,107 +230,110 @@ def _fetch_indices_fallback() -> list[dict]:
 def get_commodities_and_forex() -> list[dict]:
     """获取主要商品期货和汇率数据。
 
+    优先使用 Tushare fx_daily 获取外汇数据（稳定），
+    商品数据尝试 akshare futures_global_spot_em，
+    失败时优雅降级返回空列表。
+
     Returns:
         list of {code, name, category, price, change, change_percent, unit, updated_at}
     """
-    ak = _get_ak()
     results = []
 
-    # 1. 贵金属 & 能源（通过现货行情）
+    # 1. 外汇数据（通过 Tushare fx_daily，稳定可靠）
     try:
-        df_spot = ak.spot_goods_em()
-        if df_spot is not None and not df_spot.empty:
-            _extract_commodity(df_spot, results)
+        _fetch_forex_from_tushare(results)
     except Exception as e:
-        logger.warning(f"[GlobalMarket] 现货数据获取失败: {e}")
+        logger.warning(f"[GlobalMarket] Tushare 外汇数据获取失败: {e}")
 
-    # 2. 汇率
+    # 2. 商品期货（通过 akshare futures_global_spot_em）
     try:
-        _fetch_forex(ak, results)
+        _fetch_commodities_from_akshare(results)
     except Exception as e:
-        logger.warning(f"[GlobalMarket] 汇率数据获取失败: {e}")
+        logger.warning(f"[GlobalMarket] akshare 商品数据获取失败: {e}")
 
     return results
 
 
-def _extract_commodity(df, results: list):
-    """从现货行情中提取黄金、白银、原油。"""
-    targets = {
-        "伦敦金": ("GOLD", "贵金属", "美元/盎司"),
-        "伦敦银": ("SILVER", "贵金属", "美元/盎司"),
-        "WTI": ("CRUDE_OIL", "能源", "美元/桶"),
-        "布伦特": ("BRENT_OIL", "能源", "美元/桶"),
+def _fetch_forex_from_tushare(results: list):
+    """通过 Tushare fx_daily 获取外汇数据。"""
+    try:
+        from app.services.stock_service import get_pro
+        pro = get_pro()
+    except RuntimeError:
+        return
+
+    fx_pairs = {
+        "USDCNH.FXCM": ("USDCNY", "美元/人民币(离岸)", "汇率", ""),
+        "EURUSD.FXCM": ("EURUSD", "欧元/美元", "汇率", ""),
+        "USDJPY.FXCM": ("USDJPY", "美元/日元", "汇率", ""),
     }
 
-    for _, row in df.iterrows():
-        name = str(row.get("名称", row.get("name", "")))
-        for keyword, (code, category, unit) in targets.items():
-            if keyword in name:
+    for ts_code, (code, name, category, unit) in fx_pairs.items():
+        try:
+            df = pro.fx_daily(ts_code=ts_code, limit=2)
+            if df is not None and not df.empty:
+                latest = df.iloc[0]
+                price = _safe_float(latest.get("bid_close"))
+                prev_close = _safe_float(latest.get("bid_open"))
+                change = price - prev_close if prev_close else 0
+                pct = (change / prev_close * 100) if prev_close else 0
                 results.append({
                     "code": code,
-                    "name": GLOBAL_COMMODITIES[code]["name"],
+                    "name": name,
                     "category": category,
                     "unit": unit,
-                    "price": _safe_float(row.get("最新价", row.get("price", 0))),
-                    "change": _safe_float(row.get("涨跌额", row.get("change", 0))),
-                    "change_percent": _safe_float(row.get("涨跌幅", row.get("pct_chg", 0))),
-                    "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "price": price,
+                    "change": round(change, 5),
+                    "change_percent": round(pct, 4),
+                    "updated_at": str(latest.get("trade_date", "")),
                 })
-                break
+        except Exception:
+            continue
 
 
-def _fetch_forex(ak, results: list):
-    """获取主要汇率数据。"""
+def _fetch_commodities_from_akshare(results: list):
+    """通过 akshare futures_global_spot_em 获取商品期货数据。"""
+    ak = _get_ak()
+
     try:
-        # 美元指数
-        df_usdx = ak.currency_boc_safe()
-        if df_usdx is not None and not df_usdx.empty:
-            # 尝试从数据中提取美元/人民币
-            for _, row in df_usdx.iterrows():
-                name = str(row.get("货币名称", row.get("name", "")))
-                if "美元" in name:
-                    rate = _safe_float(row.get("中间价", row.get("中行折算价", 0)))
-                    if rate and rate > 0:
-                        results.append({
-                            "code": "USDCNY",
-                            "name": "美元/人民币",
-                            "category": "汇率",
-                            "unit": "",
-                            "price": rate / 100 if rate > 100 else rate,  # 中行汇率可能是百元单位
-                            "change": 0,
-                            "change_percent": 0,
-                            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        })
-                        break
-    except Exception as e:
-        logger.warning(f"[GlobalMarket] 汇率详情获取失败: {e}")
+        df = ak.futures_global_spot_em()
+        if df is None or df.empty:
+            return
 
-    # 美元指数通过外汇接口
-    try:
-        df_fx = ak.forex_pair_quote_em()
-        if df_fx is not None and not df_fx.empty:
-            fx_targets = {
-                "美元指数": ("USDX", "汇率", ""),
-                "欧元美元": ("EURUSD", "汇率", ""),
-                "美元日元": ("USDJPY", "汇率", ""),
-            }
-            for _, row in df_fx.iterrows():
-                name = str(row.get("名称", row.get("name", "")))
-                for keyword, (code, category, unit) in fx_targets.items():
-                    if keyword in name:
-                        results.append({
-                            "code": code,
-                            "name": GLOBAL_COMMODITIES.get(code, {}).get("name", name),
-                            "category": category,
-                            "unit": unit,
-                            "price": _safe_float(row.get("最新价", row.get("price", 0))),
-                            "change": _safe_float(row.get("涨跌额", row.get("change", 0))),
-                            "change_percent": _safe_float(row.get("涨跌幅", row.get("pct_chg", 0))),
-                            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                        })
-                        break
+        # 关键词匹配 → (code, display_name, category, unit)
+        targets = [
+            ("COMEX黄金", "GOLD", "COMEX黄金(主力)", "贵金属", "美元/盎司"),
+            ("COMEX白银", "SILVER", "COMEX白银(主力)", "贵金属", "美元/盎司"),
+            ("布伦特原油", "BRENT_OIL", "布伦特原油(主力)", "能源", "美元/桶"),
+            ("迷你原油", "CRUDE_OIL", "纽约原油(主力)", "能源", "美元/桶"),
+        ]
+
+        found_codes = set()
+        for keyword, code, display_name, category, unit in targets:
+            if code in found_codes:
+                continue
+            # 匹配含关键词且有最新价的行，取第一条（最近月合约）
+            matched = df[
+                df["名称"].str.contains(keyword, na=False)
+                & df["最新价"].notna()
+                & (df["最新价"] > 0)
+            ]
+            if matched.empty:
+                continue
+            row = matched.iloc[0]
+            found_codes.add(code)
+            results.append({
+                "code": code,
+                "name": display_name,
+                "category": category,
+                "unit": unit,
+                "price": _safe_float(row.get("最新价")),
+                "change": _safe_float(row.get("涨跌额")),
+                "change_percent": _safe_float(row.get("涨跌幅")),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            })
     except Exception as e:
-        logger.warning(f"[GlobalMarket] 外汇行情获取失败: {e}")
+        logger.warning(f"[GlobalMarket] futures_global_spot_em 获取失败: {e}")
 
 
 # ============================================================

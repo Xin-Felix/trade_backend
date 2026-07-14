@@ -344,13 +344,40 @@ def _get_industry_stocks(db, industry_ids: Optional[list[str]], top_n: int) -> d
 
 
 def _fetch_intraday_from_db(db, stock_codes: set, trade_date: date) -> dict:
-    """从 stock_intraday 表获取分时数据。
+    """从 stock_intraday 表获取分时数据（带请求级缓存）。
+
+    同一个交易日的全量分时数据只查一次数据库，后续调用直接从缓存过滤。
 
     Returns:
         {ts_code: [{time, open, close, volume, amount}, ...]}
     """
-    # 检查是否有当天数据
-    count = 0
+    # 用全量缓存避免重复查询
+    all_data = _get_intraday_cache(db, trade_date)
+    if all_data is None:
+        return {}
+
+    # 按 stock_codes 过滤
+    return {code: bars for code, bars in all_data.items() if code in stock_codes}
+
+
+# 请求级缓存：同一交易日只查一次
+_intraday_cache: dict[str, dict] = {}
+_intraday_cache_date: str = ""
+
+
+def _get_intraday_cache(db, trade_date: date) -> dict | None:
+    """获取某交易日全量分时数据（带内存缓存，60秒过期）。"""
+    global _intraday_cache, _intraday_cache_date
+    import time as _cache_time
+
+    cache_key = trade_date.isoformat()
+
+    # 检查缓存是否有效（同一交易日 + 60秒内）
+    if (cache_key == _intraday_cache_date
+            and _intraday_cache.get("_ts", 0) > _cache_time.time() - 60):
+        return _intraday_cache.get("data")
+
+    # 查数据库
     try:
         count = db.execute(
             text("SELECT COUNT(*) FROM stock_intraday WHERE trade_date = :td"),
@@ -358,12 +385,11 @@ def _fetch_intraday_from_db(db, stock_codes: set, trade_date: date) -> dict:
         ).scalar() or 0
     except Exception:
         db.rollback()
-        return {}
+        return None
 
     if count == 0:
-        return {}
+        return None
 
-    # 批量查询所有相关股票的分时数据
     rows = db.execute(
         text("""
             SELECT ts_code, trade_time, open, close, high, low, volume, amount
@@ -377,8 +403,6 @@ def _fetch_intraday_from_db(db, stock_codes: set, trade_date: date) -> dict:
     minute_data = {}
     for row in rows:
         ts_code = row[0]
-        if ts_code not in stock_codes:
-            continue
         if ts_code not in minute_data:
             minute_data[ts_code] = []
         minute_data[ts_code].append({
@@ -390,6 +414,10 @@ def _fetch_intraday_from_db(db, stock_codes: set, trade_date: date) -> dict:
             "volume": int(row[6]) if row[6] else 0,
             "amount": float(row[7]) if row[7] else 0,
         })
+
+    # 写入缓存
+    _intraday_cache = {"data": minute_data, "_ts": _cache_time.time()}
+    _intraday_cache_date = cache_key
 
     return minute_data
 

@@ -12,6 +12,7 @@ from app.schemas.user import User
 from app.services.scheduler_service import (
     get_all_job_configs,
     get_available_jobs,
+    get_available_jobs_grouped,
     get_job_logs,
     run_job_now,
     save_job_config,
@@ -54,6 +55,14 @@ async def list_available_jobs(
 ) -> dict:
     """获取所有可配置的任务类型。"""
     return {"success": True, "data": get_available_jobs()}
+
+
+@router.get("/available-grouped")
+async def list_available_jobs_grouped(
+    user: User = Depends(get_current_user),
+) -> dict:
+    """获取所有任务按分组归类（供数据中心页面展示）。"""
+    return {"success": True, "data": get_available_jobs_grouped()}
 
 
 @router.post("/jobs")

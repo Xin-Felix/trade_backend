@@ -166,6 +166,211 @@ def get_stock_quote(code: str) -> StockData:
         db.close()
 
 
+def get_stock_quotes_batch(codes: list[str]) -> list[StockData]:
+    """批量获取多只股票最新行情（单次查询，高效）。"""
+    if settings.mock_stock_data:
+        return [_mock_stock_quote(c) for c in codes]
+    if not codes:
+        return []
+
+    from sqlalchemy import func as sql_func
+
+    ts_codes = [_normalize_code(c) for c in codes]
+    db = SessionLocal()
+    try:
+        # 子查询：每只股票最新交易日
+        subq = (
+            select(StockDaily.ts_code, sql_func.max(StockDaily.trade_date).label("max_date"))
+            .where(StockDaily.ts_code.in_(ts_codes))
+            .group_by(StockDaily.ts_code)
+            .subquery()
+        )
+        # 主查询：拿到每只股票最新一条日线
+        rows = (
+            db.execute(
+                select(StockDaily)
+                .join(subq, (StockDaily.ts_code == subq.c.ts_code) & (StockDaily.trade_date == subq.c.max_date))
+            )
+            .scalars()
+            .all()
+        )
+
+        # 构建名称映射
+        name_rows = db.execute(
+            select(StockBasic.ts_code, StockBasic.name)
+            .where(StockBasic.ts_code.in_(ts_codes))
+        ).all()
+        name_map = {r[0]: r[1] for r in name_rows}
+
+        # 构建结果映射
+        quote_map: dict[str, StockData] = {}
+        for r in rows:
+            pre_close_price = r.pre_close or r.close
+            current_price = r.close
+            change_percent = _format_change_percent(pre_close_price, current_price)
+            quote_map[r.ts_code] = StockData(
+                code=r.ts_code,
+                name=name_map.get(r.ts_code, r.ts_code),
+                price=float(current_price) if current_price else 0.0,
+                change_percent=change_percent,
+                pre_close=float(pre_close_price) if pre_close_price else None,
+                updated_at=datetime.now().isoformat(),
+            )
+
+        # 按输入顺序返回
+        results = []
+        for code, ts_code in zip(codes, ts_codes):
+            if ts_code in quote_map:
+                item = quote_map[ts_code]
+                results.append(item.model_copy(update={"code": code}))
+            else:
+                results.append(StockData(
+                    code=code,
+                    name=name_map.get(ts_code, code),
+                    price=0.0,
+                    change_percent=0.0,
+                    pre_close=None,
+                    updated_at=datetime.now().isoformat(),
+                ))
+        return results
+    finally:
+        db.close()
+
+
+def get_stock_detail(code: str) -> dict:
+    """聚合接口：一次查询返回股票详情页所需的多项低频数据。
+
+    包含：quote + daily_basic + concepts + moneyflow(最近5日)
+    全部走本地数据库，不调外部 API，延迟可控。
+    """
+    ts_code = _normalize_code(code)
+    db = SessionLocal()
+    try:
+        # 1. Quote（最新日线）
+        latest = (
+            db.execute(
+                select(StockDaily)
+                .where(StockDaily.ts_code == ts_code)
+                .order_by(StockDaily.trade_date.desc())
+            )
+            .scalars()
+            .first()
+        )
+        if latest:
+            pre_close_price = latest.pre_close or latest.close
+            current_price = latest.close
+            change_percent = _format_change_percent(pre_close_price, current_price)
+            quote = {
+                "code": code,
+                "name": _stock_name(db, ts_code),
+                "price": float(current_price) if current_price else 0.0,
+                "change_percent": change_percent,
+                "pre_close": float(pre_close_price) if pre_close_price else None,
+                "updated_at": datetime.now().isoformat(),
+            }
+        else:
+            quote = {
+                "code": code,
+                "name": _stock_name(db, ts_code),
+                "price": 0.0,
+                "change_percent": 0.0,
+                "pre_close": None,
+                "updated_at": datetime.now().isoformat(),
+            }
+
+        # 2. Daily Basic（最新1条）
+        basic_row = (
+            db.execute(
+                select(StockDailyBasic)
+                .where(StockDailyBasic.ts_code == ts_code)
+                .order_by(StockDailyBasic.trade_date.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        daily_basic = None
+        if basic_row:
+            daily_basic = {
+                "ts_code": basic_row.ts_code,
+                "trade_date": basic_row.trade_date.strftime("%Y%m%d") if basic_row.trade_date else "",
+                "turnover_rate": float(basic_row.turnover_rate) if basic_row.turnover_rate else None,
+                "turnover_rate_f": float(basic_row.turnover_rate_f) if basic_row.turnover_rate_f else None,
+                "volume_ratio": float(basic_row.volume_ratio) if basic_row.volume_ratio else None,
+                "pe": float(basic_row.pe) if basic_row.pe else None,
+                "pe_ttm": float(basic_row.pe_ttm) if basic_row.pe_ttm else None,
+                "pb": float(basic_row.pb) if basic_row.pb else None,
+                "ps": float(basic_row.ps) if basic_row.ps else None,
+                "ps_ttm": float(basic_row.ps_ttm) if basic_row.ps_ttm else None,
+                "dv_ratio": float(basic_row.dv_ratio) if basic_row.dv_ratio else None,
+                "dv_ttm": float(basic_row.dv_ttm) if basic_row.dv_ttm else None,
+                "total_share": float(basic_row.total_share) if basic_row.total_share else None,
+                "float_share": float(basic_row.float_share) if basic_row.float_share else None,
+                "free_share": float(basic_row.free_share) if basic_row.free_share else None,
+                "total_mv": float(basic_row.total_mv) if basic_row.total_mv else None,
+                "circ_mv": float(basic_row.circ_mv) if basic_row.circ_mv else None,
+            }
+
+        # 3. Concepts
+        from app.models.stock import StockConcept
+        concept_rows = (
+            db.execute(
+                select(StockConcept)
+                .where(StockConcept.ts_code == ts_code)
+                .where(StockConcept.out_date.is_(None))
+                .order_by(StockConcept.in_date.desc())
+            )
+            .scalars()
+            .all()
+        )
+        concepts = [
+            {
+                "concept_id": r.concept_id,
+                "concept_name": r.concept_name,
+                "ts_code": r.ts_code,
+                "name": r.name,
+            }
+            for r in concept_rows
+        ]
+
+        # 4. Moneyflow（最近5日）
+        mf_rows = (
+            db.execute(
+                select(StockMoneyflow)
+                .where(StockMoneyflow.ts_code == ts_code)
+                .order_by(StockMoneyflow.trade_date.desc())
+                .limit(5)
+            )
+            .scalars()
+            .all()
+        )
+        moneyflow = [
+            {
+                "ts_code": r.ts_code,
+                "trade_date": r.trade_date.strftime("%Y%m%d") if r.trade_date else "",
+                "buy_sm_amount": float(r.buy_sm_amount) if r.buy_sm_amount else None,
+                "sell_sm_amount": float(r.sell_sm_amount) if r.sell_sm_amount else None,
+                "buy_md_amount": float(r.buy_md_amount) if r.buy_md_amount else None,
+                "sell_md_amount": float(r.sell_md_amount) if r.sell_md_amount else None,
+                "buy_lg_amount": float(r.buy_lg_amount) if r.buy_lg_amount else None,
+                "sell_lg_amount": float(r.sell_lg_amount) if r.sell_lg_amount else None,
+                "buy_elg_amount": float(r.buy_elg_amount) if r.buy_elg_amount else None,
+                "sell_elg_amount": float(r.sell_elg_amount) if r.sell_elg_amount else None,
+                "net_mf_amount": float(r.net_mf_amount) if r.net_mf_amount else None,
+            }
+            for r in mf_rows
+        ]
+
+        return {
+            "quote": quote,
+            "daily_basic": daily_basic,
+            "concepts": concepts,
+            "moneyflow": moneyflow,
+        }
+    finally:
+        db.close()
+
+
 def _is_index_code(ts_code: str) -> bool:
     """判断 ts_code 是否为大盘指数代码。"""
     ts_code = ts_code.upper()
@@ -346,11 +551,47 @@ def _get_intraday_from_db(ts_code: str, trade_date=None, min_count: int = 240) -
         db.close()
 
 
+def _fetch_intraday_from_akshare(
+    ts_code: str, symbol: str, period: str, limit: int
+) -> list[IntradayKlineData]:
+    """通过 akshare 新浪分钟线接口拉取最新一天的分时 K 线。"""
+    import akshare as ak
+
+    df = ak.stock_zh_a_minute(symbol=symbol, period=period, adjust="")
+    if df is None or df.empty:
+        return []
+
+    # 只保留最新一天的数据（解决跨日混合问题）
+    df = df.sort_values("day", ascending=True).reset_index(drop=True)
+    if "day" in df.columns and len(df) > 0:
+        # day 格式: "2026-07-10 09:31:00"
+        df["_date"] = df["day"].str[:10]
+        latest_day = df["_date"].iloc[-1]
+        df = df[df["_date"] == latest_day].drop(columns=["_date"])
+
+    result = []
+    for _, row in df.tail(limit).iterrows():
+        result.append(
+            IntradayKlineData(
+                ts_code=ts_code,
+                datetime=str(row["day"]),
+                period=period,
+                open=float(row["open"]) if row["open"] is not None else 0.0,
+                high=float(row["high"]) if row["high"] is not None else 0.0,
+                low=float(row["low"]) if row["low"] is not None else 0.0,
+                close=float(row["close"]) if row["close"] is not None else 0.0,
+                volume=float(row["volume"]) if "volume" in row and row["volume"] is not None else None,
+                amount=float(row["amount"]) if "amount" in row and row["amount"] is not None else None,
+            )
+        )
+    return result
+
+
 def get_intraday_klines(code: str, period: str = "1", limit: int = 241, trade_date=None) -> list[IntradayKlineData]:
     """获取分钟 K 线。
 
     - trade_date 指定时：只返回该日数据（从 DB）
-    - trade_date 不指定时：优先读 DB 最新交易日，无则走 akshare（只保留最新一天）
+    - trade_date 不指定时：优先取最新交易日数据；盘中 DB 未同步当天数据时，走 akshare 实时拉取
     """
     if settings.mock_stock_data:
         return _mock_intraday_klines(code, period=period, limit=limit)
@@ -373,51 +614,40 @@ def get_intraday_klines(code: str, period: str = "1", limit: int = 241, trade_da
         return [IntradayKlineData(**item) for item in cached[:limit]]
 
     # 1 分钟线优先读数据库：历史/已收盘数据是完整 241 条
+    db_data = None
     if period == "1":
         db_data = _get_intraday_from_db(ts_code, min_count=240)
-        if db_data:
-            ttl = _intraday_cache_ttl(db_data[-1].datetime)
-            redis_client.set(cache_key, [r.model_dump() for r in db_data], ex=ttl)
-            return db_data[:limit]
 
-    # 盘中或数据库无数据时，走 akshare 实时拉取（只保留最新一天）
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    db_is_today = db_data and db_data[-1].datetime.startswith(today_str)
+
+    # 数据库已有今天完整数据 → 直接返回
+    if db_is_today:
+        ttl = _intraday_cache_ttl(db_data[-1].datetime)
+        redis_client.set(cache_key, [r.model_dump() for r in db_data], ex=ttl)
+        return db_data[:limit]
+
+    # 盘中或数据库无今天数据时，优先走 akshare 实时拉取最新一天
     try:
-        import akshare as ak
+        live_data = _fetch_intraday_from_akshare(ts_code, symbol, period, limit)
+        if live_data:
+            ttl = _intraday_cache_ttl(live_data[-1].datetime)
+            redis_client.set(cache_key, [r.model_dump() for r in live_data], ex=ttl)
+            return live_data
+    except Exception:
+        # akshare 拉取失败时，有历史数据则降级返回历史，否则继续抛异常
+        if db_data:
+            pass
+        else:
+            raise
 
-        df = ak.stock_zh_a_minute(symbol=symbol, period=period, adjust="")
-        if df is None or df.empty:
-            return []
+    # 无今天数据且 akshare 失败/无数据，但数据库有历史数据 → 降级返回历史
+    if db_data:
+        ttl = _intraday_cache_ttl(db_data[-1].datetime)
+        redis_client.set(cache_key, [r.model_dump() for r in db_data], ex=ttl)
+        return db_data[:limit]
 
-        # 只保留最新一天的数据（解决跨日混合问题）
-        df = df.sort_values("day", ascending=True).reset_index(drop=True)
-        if "day" in df.columns and len(df) > 0:
-            # day 格式: "2026-07-10 09:31:00"
-            df["_date"] = df["day"].str[:10]
-            latest_day = df["_date"].iloc[-1]
-            df = df[df["_date"] == latest_day].drop(columns=["_date"])
-
-        result = []
-        for _, row in df.tail(limit).iterrows():
-            result.append(
-                IntradayKlineData(
-                    ts_code=ts_code,
-                    datetime=str(row["day"]),
-                    period=period,
-                    open=float(row["open"]) if row["open"] is not None else 0.0,
-                    high=float(row["high"]) if row["high"] is not None else 0.0,
-                    low=float(row["low"]) if row["low"] is not None else 0.0,
-                    close=float(row["close"]) if row["close"] is not None else 0.0,
-                    volume=float(row["volume"]) if "volume" in row and row["volume"] is not None else None,
-                    amount=float(row["amount"]) if "amount" in row and row["amount"] is not None else None,
-                )
-            )
-
-        # 缓存
-        ttl = _intraday_cache_ttl(result[-1].datetime) if result else 30
-        redis_client.set(cache_key, [r.model_dump() for r in result], ex=ttl)
-        return result
-    except Exception as exc:
-        raise RuntimeError(f"获取分时 K 线失败: {exc}") from exc
+    return []
 
 
 def get_klines(code: str, period: str = "D", limit: int = 30) -> list[KlineData]:
