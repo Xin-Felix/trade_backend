@@ -160,6 +160,20 @@ def job_sync_moneyflow_hsgt(days: int = 1):
         logger.error(f"[Scheduler] 沪深港通同步失败: {e}")
 
 
+def job_sync_index_global(days: int = 5):
+    """同步全球指数日线。"""
+    from app.services.data_sync_service import sync_index_global
+
+    logger.info(f"[Scheduler] 开始同步全球指数，最近 {days} 天")
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+    try:
+        sync_index_global(start_date=start_date, end_date=end_date)
+        logger.info("[Scheduler] 全球指数同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 全球指数同步失败: {e}")
+
+
 def job_sync_stock_limit(days: int = 1):
     """同步涨跌停。"""
     from app.services.data_sync_service import sync_stock_limit
@@ -172,6 +186,80 @@ def job_sync_stock_limit(days: int = 1):
         logger.info("[Scheduler] 涨跌停同步完成")
     except Exception as e:
         logger.error(f"[Scheduler] 涨跌停同步失败: {e}")
+
+
+def job_sync_top_list(days: int = 1):
+    """同步龙虎榜数据（每日明细+机构明细）。"""
+    from app.services.data_sync_service import sync_top_list, sync_top_inst
+
+    logger.info(f"[Scheduler] 开始同步龙虎榜，最近 {days} 天")
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+    try:
+        sync_top_list(start_date=start_date, end_date=end_date)
+        logger.info("[Scheduler] 龙虎榜明细同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 龙虎榜明细同步失败: {e}")
+    try:
+        sync_top_inst(start_date=start_date, end_date=end_date)
+        logger.info("[Scheduler] 龙虎榜机构同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 龙虎榜机构同步失败: {e}")
+
+
+def job_sync_ths_daily(days: int = 1):
+    """同步同花顺板块行情。"""
+    from app.services.data_sync_service import sync_ths_daily
+
+    logger.info(f"[Scheduler] 开始同步同花顺板块行情，最近 {days} 天")
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+    try:
+        sync_ths_daily(start_date=start_date, end_date=end_date)
+        logger.info("[Scheduler] 同花顺板块行情同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 同花顺板块行情同步失败: {e}")
+
+
+def job_sync_ths_index(**kwargs):
+    """同步同花顺指数基础信息+成分股。"""
+    from app.services.data_sync_service import sync_ths_index, sync_ths_member
+
+    logger.info("[Scheduler] 开始同步同花顺指数+成分股")
+    try:
+        sync_ths_index()
+        logger.info("[Scheduler] 同花顺指数基础同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 同花顺指数基础同步失败: {e}")
+    try:
+        sync_ths_member()
+        logger.info("[Scheduler] 同花顺成分股同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 同花顺成分股同步失败: {e}")
+
+
+def job_sync_index_basic(**kwargs):
+    """同步指数基础信息。"""
+    from app.services.data_sync_service import sync_index_basic
+
+    logger.info("[Scheduler] 开始同步指数基础信息")
+    try:
+        sync_index_basic()
+        logger.info("[Scheduler] 指数基础信息同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 指数基础信息同步失败: {e}")
+
+
+def job_sync_concept(**kwargs):
+    """同步全部概念板块成分股映射。"""
+    from app.api.v1.endpoints.sync import _run_sync_concepts
+
+    logger.info("[Scheduler] 开始同步概念映射")
+    try:
+        _run_sync_concepts()
+        logger.info("[Scheduler] 概念映射同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 概念映射同步失败: {e}")
 
 
 def job_sync_stock_basic(days: int = 1):
@@ -194,40 +282,18 @@ def job_sync_stock_basic(days: int = 1):
 
 
 def job_sync_all(days: int = 1):
-    """综合同步任务：日K线+日线因子+板块资金流+个股资金流+指数+沪深港通+涨跌停+龙虎榜+同花顺。"""
-    from app.services.data_sync_service import sync_top_list, sync_top_inst, sync_ths_daily
-
+    """综合同步任务：覆盖所有盘后核心数据。"""
     logger.info(f"[Scheduler] 开始综合同步，最近 {days} 天")
     job_sync_daily_kline(days)
     job_sync_daily_basic(days)
     job_sync_sector_moneyflow(days)
     job_sync_stock_moneyflow(days)
     job_sync_index_daily(days)
+    job_sync_index_global(days)
     job_sync_moneyflow_hsgt(days)
     job_sync_stock_limit(days)
-
-    # 龙虎榜
-    end_date = date.today()
-    start_date = end_date - timedelta(days=days)
-    try:
-        sync_top_list(start_date=start_date, end_date=end_date)
-        logger.info("[Scheduler] 龙虎榜同步完成")
-    except Exception as e:
-        logger.error(f"[Scheduler] 龙虎榜同步失败: {e}")
-
-    try:
-        sync_top_inst(start_date=start_date, end_date=end_date)
-        logger.info("[Scheduler] 龙虎榜机构同步完成")
-    except Exception as e:
-        logger.error(f"[Scheduler] 龙虎榜机构同步失败: {e}")
-
-    # 同花顺板块行情
-    try:
-        sync_ths_daily(start_date=start_date, end_date=end_date)
-        logger.info("[Scheduler] 同花顺板块行情同步完成")
-    except Exception as e:
-        logger.error(f"[Scheduler] 同花顺板块行情同步失败: {e}")
-
+    job_sync_top_list(days)
+    job_sync_ths_daily(days)
     logger.info("[Scheduler] 综合同步完成")
 
 
@@ -378,7 +444,7 @@ def job_sync_intraday_realtime(days: int = 1):
         logger.error(f"[Scheduler] 盘中分时快照采集失败: {e}")
 
 
-def job_expire_memberships():
+def job_expire_memberships(**kwargs):
     """将会员到期记录标记为 expired。"""
     from app.db.base import SessionLocal
     from app.services import membership_service
@@ -394,7 +460,7 @@ def job_expire_memberships():
         db.close()
 
 
-def job_grant_monthly_points():
+def job_grant_monthly_points(**kwargs):
     """给活跃会员发放月度积分。"""
     from app.db.base import SessionLocal
     from app.services import membership_service
@@ -476,6 +542,34 @@ def job_generate_ai_morning_report(days: int = 1):
         db.close()
 
 
+def job_generate_market_pulse(**kwargs):
+    """生成市场温度（盘中每15分钟+收盘后执行）。
+
+    仅在交易时间（9:30-15:00）和收盘后（15:00-19:00）执行。
+    非交易时间自动跳过。
+    """
+    from datetime import time as dtime
+    from app.services.market_pulse_service import generate_market_pulse
+
+    now = datetime.now()
+    current_time = now.time()
+
+    # 周末跳过
+    if now.weekday() >= 5:
+        return
+
+    # 只在 9:30~19:00 执行
+    if current_time < dtime(9, 30) or current_time > dtime(19, 0):
+        return
+
+    logger.info("[Scheduler] 开始生成市场温度")
+    try:
+        result = generate_market_pulse()
+        logger.info(f"[Scheduler] 市场温度生成完成: {result.status}, score={result.score}")
+    except Exception as e:
+        logger.error(f"[Scheduler] 市场温度生成失败: {e}")
+
+
 # ============================================================
 # 任务注册表：job_id -> 函数映射
 # ============================================================
@@ -487,6 +581,12 @@ JOB_REGISTRY: dict[str, callable] = {
     "sync_sector_moneyflow": job_sync_sector_moneyflow,
     "sync_stock_moneyflow": job_sync_stock_moneyflow,
     "sync_index_daily": job_sync_index_daily,
+    "sync_index_global": job_sync_index_global,
+    "sync_top_list": job_sync_top_list,
+    "sync_ths_daily": job_sync_ths_daily,
+    "sync_ths_index": job_sync_ths_index,
+    "sync_index_basic": job_sync_index_basic,
+    "sync_concept": job_sync_concept,
     "sync_moneyflow_hsgt": job_sync_moneyflow_hsgt,
     "sync_stock_limit": job_sync_stock_limit,
     "sync_stock_basic": job_sync_stock_basic,
@@ -508,6 +608,7 @@ JOB_REGISTRY: dict[str, callable] = {
     "generate_daily_reviews": job_generate_daily_reviews,
     "generate_ai_position_advices": job_generate_ai_position_advices,
     "generate_ai_morning_report": job_generate_ai_morning_report,
+    "generate_market_pulse": job_generate_market_pulse,
 }
 
 JOB_DESCRIPTIONS: dict[str, str] = {

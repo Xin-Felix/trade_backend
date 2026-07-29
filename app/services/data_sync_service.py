@@ -1204,12 +1204,124 @@ def _build_index_daily_values(row) -> dict | None:
     }
 
 
+# 需要同步的主要指数列表
+_INDEX_CODES = [
+    "000001.SH",  # 上证指数
+    "399001.SZ",  # 深证成指
+    "399006.SZ",  # 创业板指
+    "000688.SH",  # 科创50
+    "000016.SH",  # 上证50
+    "000300.SH",  # 沪深300
+    "000905.SH",  # 中证500
+    "000852.SH",  # 中证1000
+    "399303.SZ",  # 国证2000
+    "899050.BJ",  # 北证50
+]
+
+
 def sync_index_daily(
     start_date: date | None = None,
     end_date: date | None = None,
     db: Session | None = None,
 ) -> int:
-    """同步指数日线行情。"""
+    """同步指数日线行情（逐指数查询，Tushare index_daily 必须传 ts_code）。"""
+    pro = get_pro()
+    should_close_db = False
+    if db is None:
+        db = SessionLocal()
+        should_close_db = True
+    try:
+        if end_date is None:
+            end_date = date.today()
+        if start_date is None:
+            latest = _latest_trade_date(db, IndexDaily, IndexDaily.trade_date)
+            start_date = latest if latest else date(2020, 1, 1)
+
+        start_str = start_date.strftime("%Y%m%d")
+        end_str = end_date.strftime("%Y%m%d")
+        count = 0
+
+        for ts_code in _INDEX_CODES:
+            try:
+                df = pro.query(
+                    "index_daily",
+                    ts_code=ts_code,
+                    start_date=start_str,
+                    end_date=end_str,
+                )
+                _tushare_sleep()
+                if df is None or df.empty:
+                    continue
+                rows = []
+                for _, row in df.iterrows():
+                    values = _build_index_daily_values(row)
+                    if values:
+                        rows.append(values)
+                if rows:
+                    pk_columns = [c.name for c in IndexDaily.__table__.primary_key.columns]
+                    seen = {}
+                    for r in rows:
+                        key = tuple(r.get(c) for c in pk_columns)
+                        seen[key] = r
+                    rows = list(seen.values())
+                    stmt = insert(IndexDaily).values(rows)
+                    update_dict = {
+                        c.name: stmt.excluded[c.name]
+                        for c in IndexDaily.__table__.columns
+                        if c.name not in pk_columns and c.name not in ("created_at", "updated_at")
+                    }
+                    if update_dict:
+                        stmt = stmt.on_conflict_do_update(index_elements=pk_columns, set_=update_dict)
+                    else:
+                        stmt = stmt.on_conflict_do_nothing(index_elements=pk_columns)
+                    db.execute(stmt)
+                    db.commit()
+                count += len(rows)
+                _log(f"      index_daily {ts_code}: {len(rows)} rows")
+            except Exception as exc:
+                _log(f"[sync_index_daily] {ts_code} failed: {exc}")
+                db.rollback()
+                continue
+
+        _log(f"      index_daily done: {count} total rows")
+        return count
+    finally:
+        if should_close_db:
+            db.close()
+
+
+# ---------------------------------------------------------------------------
+# 全球指数（index_global）
+# ---------------------------------------------------------------------------
+
+
+def _build_index_global_values(row) -> dict | None:
+    trade_date = _parse_date(row.get("trade_date"))
+    if trade_date is None:
+        return None
+    return {
+        "trade_date": trade_date,
+        "ts_code": str(row.get("ts_code", "")),
+        "open": _to_numeric(row.get("open")),
+        "close": _to_numeric(row.get("close")),
+        "high": _to_numeric(row.get("high")),
+        "low": _to_numeric(row.get("low")),
+        "pre_close": _to_numeric(row.get("pre_close")),
+        "change": _to_numeric(row.get("change")),
+        "pct_chg": _to_numeric(row.get("pct_chg")),
+        "swing": _to_numeric(row.get("swing")),
+        "vol": _to_numeric(row.get("vol")),
+    }
+
+
+def sync_index_global(
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session | None = None,
+) -> int:
+    """同步全球指数日线行情（Tushare index_global）。"""
+    from app.models.stock import IndexGlobal
+
     pro = get_pro()
 
     should_close_db = False
@@ -1221,14 +1333,60 @@ def sync_index_daily(
         if end_date is None:
             end_date = date.today()
         if start_date is None:
-            latest = _latest_trade_date(db, IndexDaily, IndexDaily.trade_date)
-            start_date = latest if latest else date(1990, 12, 19)
+            latest = _latest_trade_date(db, IndexGlobal, IndexGlobal.trade_date)
+            start_date = latest if latest else date(2024, 1, 1)
 
-        count = _sync_by_trade_date(
-            db, pro, "index_daily", IndexDaily, _build_index_daily_values,
-            start_date, end_date, log_prefix="指数日线 "
-        )
-        _log(f"      index_daily 完成: 累计 {count} 条")
+        # index_global 接口按 trade_date 查询
+        trade_dates = _get_trade_dates(pro, start_date, end_date)
+        if not trade_dates:
+            return 0
+
+        from sqlalchemy.dialects.postgresql import insert
+
+        count = 0
+        for trade_date_str in trade_dates:
+            try:
+                df = pro.index_global(trade_date=trade_date_str)
+                _tushare_sleep()
+
+                if df is None or df.empty:
+                    continue
+
+                rows = []
+                for _, row in df.iterrows():
+                    values = _build_index_global_values(row)
+                    if values:
+                        rows.append(values)
+
+                if rows:
+                    pk_columns = ["ts_code", "trade_date"]
+                    seen = {}
+                    for r in rows:
+                        key = (r["ts_code"], r["trade_date"])
+                        seen[key] = r
+                    rows = list(seen.values())
+
+                    stmt = insert(IndexGlobal).values(rows)
+                    update_dict = {
+                        c.name: stmt.excluded[c.name]
+                        for c in IndexGlobal.__table__.columns
+                        if c.name not in pk_columns and c.name not in ("created_at", "updated_at")
+                    }
+                    if update_dict:
+                        stmt = stmt.on_conflict_do_update(index_elements=pk_columns, set_=update_dict)
+                    else:
+                        stmt = stmt.on_conflict_do_nothing(index_elements=pk_columns)
+                    db.execute(stmt)
+                    db.commit()
+
+                count += len(rows)
+                _log(f"      index_global {trade_date_str} 完成 {len(rows)} 条")
+            except Exception as exc:
+                _log(f"[sync_index_global] failed for {trade_date_str}: {exc}")
+                db.rollback()
+                continue
+
+        _log(f"      index_global 完成: 累计 {count} 条")
         return count
     finally:
         if should_close_db:

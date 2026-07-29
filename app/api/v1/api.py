@@ -18,11 +18,13 @@ from app.api.v1.endpoints import (
     h5_page,
     limit_up_admin,
     market_daily_review_admin,
+    market_pulse,
     membership,
     membership_admin,
     points,
     points_admin,
     scheduler,
+    sector_default_config_admin,
     stocks,
     sync,
     upload,
@@ -39,6 +41,11 @@ api_router.include_router(global_market.router, prefix="/global-market", tags=["
 api_router.include_router(admin.router, prefix="/admin", tags=["后台管理"])
 api_router.include_router(limit_up_admin.router, prefix="/admin/limit-up-ladder", tags=["涨停板天梯管理"])
 api_router.include_router(points_admin.router, prefix="/admin/points", tags=["积分管理"])
+api_router.include_router(
+    sector_default_config_admin.router,
+    prefix="/admin/sector-default-configs",
+    tags=["分时资金流向默认配置管理"],
+)
 api_router.include_router(membership_admin.router, prefix="/admin/membership", tags=["会员管理"])
 api_router.include_router(membership.router, prefix="/membership", tags=["会员"])
 api_router.include_router(points.router, prefix="/points", tags=["积分"])
@@ -51,6 +58,7 @@ api_router.include_router(ai_position_advice.router, prefix="/ai-position-advice
 api_router.include_router(ai_position_advice_admin.router, prefix="/admin/ai-position-advices", tags=["AI仓位建议管理"])
 api_router.include_router(ai_morning_report.router, prefix="/ai-morning-reports", tags=["AI晨报"])
 api_router.include_router(ai_morning_report_admin.router, prefix="/admin/ai-morning-reports", tags=["AI晨报管理"])
+api_router.include_router(market_pulse.router, prefix="/market-pulse", tags=["AI市场温度"])
 api_router.include_router(data_browser.router, prefix="/data", tags=["数据浏览"])
 api_router.include_router(scheduler.router, prefix="/scheduler", tags=["调度管理"])
 api_router.include_router(datasource.router, prefix="/datasource", tags=["数据源管理"])

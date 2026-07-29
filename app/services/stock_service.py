@@ -121,13 +121,66 @@ def _stock_name(db: Session, ts_code: str) -> str:
 
 
 def get_stock_quote(code: str) -> StockData:
-    """获取单只股票最新行情。"""
+    """获取单只股票最新行情。
+
+    盘中：优先用 stock_intraday 最新分时价格（实时）
+    收盘后：用 stock_daily 收盘价
+    """
     if settings.mock_stock_data:
         return _mock_stock_quote(code)
 
     ts_code = _normalize_code(code)
     db = SessionLocal()
     try:
+        # 优先从分时表取当天最新价（盘中实时）
+        from app.services.daily_review_service import _cn_today
+        today = _cn_today()
+
+        intraday_price = None
+        intraday_open = None
+        intraday_high = None
+        intraday_low = None
+        intraday_volume = None
+        intraday_amount = None
+
+        # 查分时表当天数据：聚合开高低量额
+        intraday_agg = db.execute(
+            select(
+                func.min(StockIntraday.open).label("day_open"),  # 用 min 兜底，后面取第一条覆盖
+                func.max(StockIntraday.high).label("day_high"),
+                func.min(StockIntraday.low).label("day_low"),
+                func.sum(StockIntraday.volume).label("day_volume"),
+                func.sum(StockIntraday.amount).label("day_amount"),
+            )
+            .where(StockIntraday.ts_code == ts_code, StockIntraday.trade_date == today)
+        ).first()
+
+        # 取第一条的 open 作为今开
+        first_open_row = db.execute(
+            select(StockIntraday.open)
+            .where(StockIntraday.ts_code == ts_code, StockIntraday.trade_date == today)
+            .order_by(StockIntraday.trade_time.asc())
+            .limit(1)
+        ).scalar()
+
+        # 取最新 close
+        intraday_row = db.execute(
+            select(StockIntraday.close)
+            .where(StockIntraday.ts_code == ts_code, StockIntraday.trade_date == today)
+            .order_by(StockIntraday.trade_time.desc())
+            .limit(1)
+        ).scalar()
+
+        if intraday_row:
+            intraday_price = float(intraday_row)
+        if intraday_agg and intraday_agg[1] is not None:
+            intraday_open = float(first_open_row) if first_open_row else None
+            intraday_high = float(intraday_agg[1]) if intraday_agg[1] else None
+            intraday_low = float(intraday_agg[2]) if intraday_agg[2] else None
+            intraday_volume = float(intraday_agg[3]) if intraday_agg[3] else None
+            intraday_amount = float(intraday_agg[4]) if intraday_agg[4] else None
+
+        # 日线数据（拿 pre_close 和兜底价格）
         latest = (
             db.execute(
                 select(StockDaily)
@@ -138,7 +191,7 @@ def get_stock_quote(code: str) -> StockData:
             .first()
         )
 
-        if latest is None:
+        if latest is None and intraday_price is None:
             return StockData(
                 code=code,
                 name=_stock_name(db, ts_code),
@@ -148,18 +201,62 @@ def get_stock_quote(code: str) -> StockData:
                 updated_at=datetime.now().isoformat(),
             )
 
-        # 最新日线记录：close 为当日收盘价，pre_close 为昨收
-        # iOS 端会用分时最新价覆盖 price，后端先给出基于日线的涨跌幅
-        pre_close_price = latest.pre_close or latest.close
-        current_price = latest.close
-        change_percent = _format_change_percent(pre_close_price, current_price)
+        # 确定 pre_close（昨收）
+        if latest:
+            # 如果日线最新是今天的，pre_close 直接用它的
+            if latest.trade_date == today:
+                pre_close_price = float(latest.pre_close) if latest.pre_close else None
+            else:
+                # 日线最新不是今天 → 它的 close 就是昨收
+                pre_close_price = float(latest.close) if latest.close else None
+        else:
+            pre_close_price = None
+
+        # 确定当前价：优先分时实时价，其次日线收盘价
+        if intraday_price:
+            current_price = intraday_price
+        elif latest:
+            current_price = float(latest.close) if latest.close else 0.0
+        else:
+            current_price = 0.0
+
+        # 确定开高低：优先分时聚合，其次日线
+        if intraday_open:
+            open_price = intraday_open
+            high_price = intraday_high
+            low_price = intraday_low
+            volume = intraday_volume
+            amount = intraday_amount
+        elif latest:
+            open_price = float(latest.open) if latest.open else None
+            high_price = float(latest.high) if latest.high else None
+            low_price = float(latest.low) if latest.low else None
+            volume = float(latest.vol) if latest.vol else None
+            amount = float(latest.amount) if latest.amount else None
+        else:
+            open_price = None
+            high_price = None
+            low_price = None
+            volume = None
+            amount = None
+
+        # 计算涨跌幅
+        if pre_close_price and current_price:
+            change_percent = _format_change_percent(pre_close_price, current_price)
+        else:
+            change_percent = 0.0
 
         return StockData(
             code=code,
             name=_stock_name(db, ts_code),
-            price=float(current_price) if current_price else 0.0,
+            price=current_price,
             change_percent=change_percent,
-            pre_close=float(pre_close_price) if pre_close_price else None,
+            pre_close=pre_close_price,
+            open=open_price,
+            high=high_price,
+            low=low_price,
+            volume=volume,
+            amount=amount,
             updated_at=datetime.now().isoformat(),
         )
     finally:
@@ -551,10 +648,51 @@ def _get_intraday_from_db(ts_code: str, trade_date=None, min_count: int = 240) -
         db.close()
 
 
+def _fetch_intraday_from_tushare(
+    ts_code: str, period: str, limit: int
+) -> list[IntradayKlineData]:
+    """通过 Tushare stk_mins 接口拉取最新一天的分时 K 线。"""
+    from app.analytics.intraday_sync import _call_tushare
+
+    today = datetime.now()
+    start_dt = f"{today.strftime('%Y-%m-%d')} 09:30:00"
+    end_dt = f"{today.strftime('%Y-%m-%d')} 15:00:00"
+
+    freq_map = {"1": "1min", "5": "5min", "15": "15min", "30": "30min", "60": "60min"}
+    freq = freq_map.get(period, "1min")
+
+    rows = _call_tushare("stk_mins", timeout=10, ts_code=ts_code, freq=freq, start_date=start_dt, end_date=end_dt)
+    if not rows:
+        return []
+
+    result = []
+    for row in rows:
+        try:
+            result.append(
+                IntradayKlineData(
+                    ts_code=ts_code,
+                    datetime=str(row.get("trade_time", "")),
+                    period=period,
+                    open=float(row["open"]) if row.get("open") is not None else 0.0,
+                    high=float(row["high"]) if row.get("high") is not None else 0.0,
+                    low=float(row["low"]) if row.get("low") is not None else 0.0,
+                    close=float(row["close"]) if row.get("close") is not None else 0.0,
+                    volume=float(row["vol"]) if row.get("vol") is not None else None,
+                    amount=float(row["amount"]) if row.get("amount") is not None else None,
+                )
+            )
+        except (ValueError, KeyError):
+            continue
+
+    # 按时间排序
+    result.sort(key=lambda x: x.datetime)
+    return result[-limit:] if len(result) > limit else result
+
+
 def _fetch_intraday_from_akshare(
     ts_code: str, symbol: str, period: str, limit: int
 ) -> list[IntradayKlineData]:
-    """通过 akshare 新浪分钟线接口拉取最新一天的分时 K 线。"""
+    """通过 akshare 新浪分钟线接口拉取最新一天的分时 K 线（已弃用，保留兼容）。"""
     import akshare as ak
 
     df = ak.stock_zh_a_minute(symbol=symbol, period=period, adjust="")
@@ -606,46 +744,42 @@ def get_intraday_klines(code: str, period: str = "1", limit: int = 241, trade_da
             return db_data[:limit]
         return []
 
-    cache_key = f"stock:intraday:{ts_code}:{period}"
+    # 用北京时间判断"今天"
+    from app.services.daily_review_service import _cn_today
+    today_date = _cn_today()
+    today_str = today_date.strftime("%Y-%m-%d")
+    cache_key = f"stock:intraday:{ts_code}:{period}:{today_str}"
 
     # 优先读 Redis 缓存，但先校验格式（防止旧版脏缓存长期生效）
     cached = redis_client.get(cache_key)
     if cached and isinstance(cached, list) and _is_valid_intraday_cache(cached, period):
         return [IntradayKlineData(**item) for item in cached[:limit]]
 
-    # 1 分钟线优先读数据库：历史/已收盘数据是完整 241 条
+    # 1 分钟线优先读数据库：取今天的数据
     db_data = None
     if period == "1":
-        db_data = _get_intraday_from_db(ts_code, min_count=240)
+        db_data = _get_intraday_from_db(ts_code, trade_date=today_date, min_count=100)
 
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    db_is_today = db_data and db_data[-1].datetime.startswith(today_str)
-
-    # 数据库已有今天完整数据 → 直接返回
-    if db_is_today:
+    # 数据库已有今天数据（即使不完整 241 条，盘中也可用）
+    if db_data:
         ttl = _intraday_cache_ttl(db_data[-1].datetime)
         redis_client.set(cache_key, [r.model_dump() for r in db_data], ex=ttl)
         return db_data[:limit]
 
-    # 盘中或数据库无今天数据时，优先走 akshare 实时拉取最新一天
+    # 数据库无今天数据，走 Tushare stk_mins 实时拉取
     try:
-        live_data = _fetch_intraday_from_akshare(ts_code, symbol, period, limit)
+        live_data = _fetch_intraday_from_tushare(ts_code, period, limit)
         if live_data:
             ttl = _intraday_cache_ttl(live_data[-1].datetime)
             redis_client.set(cache_key, [r.model_dump() for r in live_data], ex=ttl)
             return live_data
     except Exception:
-        # akshare 拉取失败时，有历史数据则降级返回历史，否则继续抛异常
-        if db_data:
-            pass
-        else:
-            raise
+        pass
 
-    # 无今天数据且 akshare 失败/无数据，但数据库有历史数据 → 降级返回历史
-    if db_data:
-        ttl = _intraday_cache_ttl(db_data[-1].datetime)
-        redis_client.set(cache_key, [r.model_dump() for r in db_data], ex=ttl)
-        return db_data[:limit]
+    # 都拿不到今天数据，降级返回最近一个交易日的历史数据
+    fallback_data = _get_intraday_from_db(ts_code, min_count=100)
+    if fallback_data:
+        return fallback_data[:limit]
 
     return []
 
@@ -1008,6 +1142,7 @@ def get_sector_moneyflow_trend(
     start_date: str | None = None,
     end_date: str | None = None,
     top_n: int | None = None,
+    ts_codes: list[str] | None = None,
 ) -> dict:
     """获取板块资金流时间段趋势。"""
     sector_type = sector_type.lower()
@@ -1058,8 +1193,12 @@ def get_sector_moneyflow_trend(
         sorted_dates = sorted(dates_set)
         series = list(series_map.values())
 
-        # 按时间段累计净流入排序，返回 Top N
-        if top_n is not None and top_n > 0:
+        # 如果指定了板块代码/名称，按指定列表过滤
+        if ts_codes:
+            ts_codes_set = set(ts_codes)
+            series = [s for s in series if s["ts_code"] in ts_codes_set or s["name"] in ts_codes_set]
+        elif top_n is not None and top_n > 0:
+            # 未指定板块时，按累计净流入排序返回 Top N
             series = sorted(
                 series,
                 key=lambda s: sum(v["net_amount"] for v in s["values"]),

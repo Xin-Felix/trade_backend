@@ -1,7 +1,7 @@
 """国际市场数据服务。
 
 提供美股指数、港股指数、黄金、原油、美元指数、人民币汇率等全球主要市场数据。
-数据来源：AKShare（免费，实时性好）。
+数据来源：Tushare Pro（首选）+ AKShare（akshare 仅作为全球指数的降级备选）。
 """
 
 import logging
@@ -182,45 +182,6 @@ def _fetch_indices_from_akshare() -> list[dict]:
     return results
 
 
-# 保留原函数名作为别名，兼容旧调用
-_fetch_indices_fallback = _fetch_indices_from_akshare
-
-
-def _fetch_indices_fallback() -> list[dict]:
-    """备选方案：通过 Tushare index_global 获取最近交易日的全球指数。"""
-    try:
-        from app.services.data_sync_service import get_pro
-        pro = get_pro()
-
-        # 取最近 5 个交易日，避免非交易日无数据
-        for days_ago in range(5):
-            trade_date = (date.today() - timedelta(days=days_ago)).strftime("%Y%m%d")
-            df = pro.index_global(trade_date=trade_date)
-            if df is not None and not df.empty:
-                break
-        else:
-            _log_global_market_event("tushare", "failed", "index_global 最近 5 个交易日均无数据")
-            return []
-
-        results = []
-        for _, row in df.iterrows():
-            ts_code = row.get("ts_code", "")
-            results.append({
-                "code": ts_code,
-                "name": row.get("name", ts_code),
-                "market": "全球",
-                "price": _safe_float(row.get("close")),
-                "change": _safe_float(row.get("change")),
-                "change_percent": _safe_float(row.get("pct_chg")),
-                "updated_at": str(row.get("trade_date", "")),
-            })
-        _log_global_market_event("tushare", "success", f"通过 index_global 获取 {len(results)} 条全球指数", data_count=len(results))
-        return results
-    except Exception as e:
-        logger.error(f"[GlobalMarket] 备选方案也失败: {e}")
-        _log_global_market_event("tushare", "failed", str(e)[:1000])
-        return []
-
 
 # ============================================================
 # 商品期货 & 汇率
@@ -228,28 +189,24 @@ def _fetch_indices_fallback() -> list[dict]:
 
 
 def get_commodities_and_forex() -> list[dict]:
-    """获取主要商品期货和汇率数据。
-
-    优先使用 Tushare fx_daily 获取外汇数据（稳定），
-    商品数据尝试 akshare futures_global_spot_em，
-    失败时优雅降级返回空列表。
+    """获取主要商品期货和汇率数据（全部使用 Tushare）。
 
     Returns:
         list of {code, name, category, price, change, change_percent, unit, updated_at}
     """
     results = []
 
-    # 1. 外汇数据（通过 Tushare fx_daily，稳定可靠）
+    # 1. 外汇数据（Tushare fx_daily）
     try:
         _fetch_forex_from_tushare(results)
     except Exception as e:
         logger.warning(f"[GlobalMarket] Tushare 外汇数据获取失败: {e}")
 
-    # 2. 商品期货（通过 akshare futures_global_spot_em）
+    # 2. 商品期货（Tushare fut_daily，国内主力合约）
     try:
-        _fetch_commodities_from_akshare(results)
+        _fetch_commodities_from_tushare(results)
     except Exception as e:
-        logger.warning(f"[GlobalMarket] akshare 商品数据获取失败: {e}")
+        logger.warning(f"[GlobalMarket] Tushare 商品期货获取失败: {e}")
 
     return results
 
@@ -291,49 +248,69 @@ def _fetch_forex_from_tushare(results: list):
             continue
 
 
-def _fetch_commodities_from_akshare(results: list):
-    """通过 akshare futures_global_spot_em 获取商品期货数据。"""
-    ak = _get_ak()
+def _fetch_commodities_from_tushare(results: list):
+    """通过 Tushare fut_daily 获取国内主力商品期货数据。
 
+    国内主力合约：
+    - 沪金 AU（上期所 SHFE）— 对标国际金价
+    - 沪银 AG（上期所 SHFE）
+    - 原油 SC（上期能源 INE）— 对标国际油价
+    - 铜 CU（上期所 SHFE）— 工业品风向标
+    """
     try:
-        df = ak.futures_global_spot_em()
-        if df is None or df.empty:
-            return
+        from app.services.stock_service import get_pro
+        pro = get_pro()
+    except RuntimeError:
+        return
 
-        # 关键词匹配 → (code, display_name, category, unit)
-        targets = [
-            ("COMEX黄金", "GOLD", "COMEX黄金(主力)", "贵金属", "美元/盎司"),
-            ("COMEX白银", "SILVER", "COMEX白银(主力)", "贵金属", "美元/盎司"),
-            ("布伦特原油", "BRENT_OIL", "布伦特原油(主力)", "能源", "美元/桶"),
-            ("迷你原油", "CRUDE_OIL", "纽约原油(主力)", "能源", "美元/桶"),
-        ]
+    # 品种 → (对外code, 显示名, 类别, 单位, 交易所)
+    commodities = {
+        "AU": ("GOLD", "沪金(主力)", "贵金属", "元/克", "SHFE"),
+        "AG": ("SILVER", "沪银(主力)", "贵金属", "元/千克", "SHFE"),
+        "SC": ("CRUDE_OIL", "原油(主力)", "能源", "元/桶", "INE"),
+        "CU": ("COPPER", "沪铜(主力)", "工业品", "元/吨", "SHFE"),
+    }
 
-        found_codes = set()
-        for keyword, code, display_name, category, unit in targets:
-            if code in found_codes:
+    for symbol, (code, name, category, unit, exchange) in commodities.items():
+        try:
+            # 通过 fut_mapping 获取当前主力合约代码
+            df_map = pro.fut_mapping(ts_code=f"{symbol}.{exchange}")
+            if df_map is not None and not df_map.empty:
+                main_code = df_map.iloc[0]["mapping_ts_code"]
+            else:
+                # fallback: 构造近月合约
+                from datetime import date as _date
+                now = _date.today()
+                m = now.month + 1 if now.month < 12 else 1
+                y = now.year if now.month < 12 else now.year + 1
+                main_code = f"{symbol}{str(y)[-2:]}{m:02d}.{exchange}"
+
+            # 拿最近日线
+            df = pro.fut_daily(ts_code=main_code, limit=2)
+            if df is None or df.empty:
                 continue
-            # 匹配含关键词且有最新价的行，取第一条（最近月合约）
-            matched = df[
-                df["名称"].str.contains(keyword, na=False)
-                & df["最新价"].notna()
-                & (df["最新价"] > 0)
-            ]
-            if matched.empty:
+
+            latest = df.iloc[0]
+            price = _safe_float(latest.get("close"))
+            change = _safe_float(latest.get("change"))
+            pct_chg = _safe_float(latest.get("pct_chg"))
+
+            if not price or price == 0:
                 continue
-            row = matched.iloc[0]
-            found_codes.add(code)
+
             results.append({
                 "code": code,
-                "name": display_name,
+                "name": name,
                 "category": category,
                 "unit": unit,
-                "price": _safe_float(row.get("最新价")),
-                "change": _safe_float(row.get("涨跌额")),
-                "change_percent": _safe_float(row.get("涨跌幅")),
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "price": price,
+                "change": change,
+                "change_percent": pct_chg,
+                "updated_at": str(latest.get("trade_date", "")),
             })
-    except Exception as e:
-        logger.warning(f"[GlobalMarket] futures_global_spot_em 获取失败: {e}")
+        except Exception as e:
+            logger.debug(f"[GlobalMarket] {symbol} 期货数据获取失败: {e}")
+            continue
 
 
 # ============================================================

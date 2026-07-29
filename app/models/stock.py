@@ -629,3 +629,32 @@ class StockConcept(Base):
 
 # 兼容旧导入名称
 StockKline = StockDaily
+
+
+class IndexGlobal(Base):
+    """全球指数日线行情（Tushare index_global）
+
+    存储国际主要指数每日数据：美股、港股、亚太、欧洲等。
+    """
+
+    __tablename__ = "index_global"
+
+    ts_code = Column(String(20), primary_key=True, comment="指数代码，如 DJI/SPX/HSI")
+    trade_date = Column(Date, primary_key=True, comment="交易日期")
+
+    open = Column(Numeric(20, 4), nullable=True, comment="开盘价")
+    close = Column(Numeric(20, 4), nullable=True, comment="收盘价")
+    high = Column(Numeric(20, 4), nullable=True, comment="最高价")
+    low = Column(Numeric(20, 4), nullable=True, comment="最低价")
+    pre_close = Column(Numeric(20, 4), nullable=True, comment="昨收价")
+    change = Column(Numeric(20, 4), nullable=True, comment="涨跌额")
+    pct_chg = Column(Numeric(20, 4), nullable=True, comment="涨跌幅(%)")
+    swing = Column(Numeric(20, 4), nullable=True, comment="振幅(%)")
+    vol = Column(Numeric(20, 4), nullable=True, comment="成交量")
+
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("ts_code", "trade_date", name="uix_index_global"),
+    )

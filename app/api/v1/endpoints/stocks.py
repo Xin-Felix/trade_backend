@@ -264,14 +264,19 @@ async def get_sector_moneyflow_trend(
     start_date: str = Query(..., min_length=8, max_length=8, description="开始日期 YYYYMMDD"),
     end_date: str = Query(..., min_length=8, max_length=8, description="结束日期 YYYYMMDD"),
     top_n: int = Query(30, ge=1, le=100, description="返回累计净流入前 N 的板块"),
+    ts_codes: str = Query(None, description="逗号分隔的板块代码或名称，指定后忽略 top_n"),
     user: User = Depends(require_feature("sector_moneyflow", consume=True)),
 ) -> SectorMoneyflowTrendResponse:
-    """获取板块资金流时间段趋势（动态折线图）。"""
+    """获取板块资金流时间段趋势（动态折线图）。
+    当传入 ts_codes 时，只返回指定板块的趋势数据，忽略 top_n 排序。
+    """
+    code_list = [c.strip() for c in ts_codes.split(",") if c.strip()] if ts_codes else None
     result = stock_service.get_sector_moneyflow_trend(
         sector_type=sector_type,
         start_date=start_date,
         end_date=end_date,
-        top_n=top_n,
+        top_n=top_n if not code_list else None,
+        ts_codes=code_list,
     )
     return SectorMoneyflowTrendResponse(**result)
 

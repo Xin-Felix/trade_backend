@@ -7,8 +7,43 @@ from app.models.membership import MembershipTier
 from app.models.points import FeaturePermission
 from sqlalchemy.orm import Session
 
-from app.models.admin import AdminMenu, AdminRole
+from app.models.admin import AdminMenu, AdminRole, RoleMenu
 from app.models.h5_page import H5Page
+from app.models.sector_default_config import SectorDefaultConfig
+from sqlalchemy import text
+
+
+# 牛市热门概念预设（同花顺概念代码）
+_HOT_CONCEPT_IDS = [
+    "885728.TI",  # 人工智能
+    "885756.TI",  # 芯片概念
+    "886069.TI",  # 人形机器人
+    "885517.TI",  # 机器人概念
+    "886100.TI",  # DeepSeek概念
+    "885431.TI",  # 新能源汽车
+    "885921.TI",  # 储能
+    "886067.TI",  # 低空经济
+    "885806.TI",  # 华为概念
+    "885800.TI",  # 消费电子概念
+    "885700.TI",  # 军工
+    "885531.TI",  # 光伏概念
+    "885710.TI",  # 锂电池概念
+    "885887.TI",  # 数据中心
+    "886108.TI",  # AI应用
+    "885957.TI",  # 东数西算(算力)
+    "886099.TI",  # AI智能体
+    "885736.TI",  # 无人驾驶
+    "885946.TI",  # 传感器
+    "886042.TI",  # 存储芯片
+]
+
+# 牛市热门行业预设
+_HOT_INDUSTRY_NAMES = [
+    "半导体", "元器件", "软件服务", "专用机械", "汽车配件",
+    "通信设备", "IT设备", "互联网", "电气设备", "电器仪表",
+    "机械基件", "化工原料", "化学制药", "生物制药", "中成药",
+    "医疗保健", "航空", "证券", "银行", "小金属"
+]
 
 
 # 初始角色数据
@@ -152,6 +187,18 @@ _SEED_MENUS = [
         "icon": "ep:trend-charts",
         "menu_type": 1,
         "rank": 2,
+    },
+    {
+        "id": 24,
+        "parent_id": 10,
+        "path": "/data/sector-default/index",
+        "name": "SectorDefault",
+        "component": "data/sector-default/index",
+        "redirect": None,
+        "title": "分时资金流向默认配置",
+        "icon": "ep:files",
+        "menu_type": 1,
+        "rank": 5,
     },
     # ====== 会员管理 ======
     {
@@ -337,6 +384,18 @@ _SEED_MENUS = [
         "menu_type": 1,
         "rank": 3,
     },
+    {
+        "id": 55,
+        "parent_id": 52,
+        "path": "/ai-content/market-pulse/index",
+        "name": "MarketPulse",
+        "component": "ai-content/market-pulse/index",
+        "redirect": None,
+        "title": "AI 市场温度",
+        "icon": "ep:odometer",
+        "menu_type": 1,
+        "rank": 4,
+    },
 ]
 
 
@@ -388,6 +447,19 @@ def seed_admin_menus(db: Session) -> None:
         )
         db.add(menu)
     db.commit()
+
+    # 为 admin 角色自动关联所有菜单（只补充缺失的）
+    admin_role_code = "admin"
+    existing_menu_ids = {
+        rm.menu_id
+        for rm in db.query(RoleMenu).filter(RoleMenu.role == admin_role_code).all()
+    }
+    all_menu_ids = {m["id"] for m in _SEED_MENUS}
+    missing_menu_ids = all_menu_ids - existing_menu_ids
+    for menu_id in missing_menu_ids:
+        db.add(RoleMenu(role=admin_role_code, menu_id=menu_id))
+    if missing_menu_ids:
+        db.commit()
 
 
 def seed_h5_pages(db: Session) -> None:
@@ -518,4 +590,40 @@ def seed_membership_data(db: Session) -> None:
                 existing.required_points = fp_data["required_points"]
             continue
         db.add(FeaturePermission(**fp_data, enabled=1, consume_points=1))
+    db.commit()
+
+
+def seed_sector_default_configs(db: Session) -> None:
+    """初始化分时资金流向默认配置（已存在则跳过）。"""
+    # 概念：过滤掉数据库中不存在的，保留前 20 个有效
+    existing_concept_rows = db.execute(
+        text("SELECT concept_id FROM stock_concept WHERE concept_id = ANY(:ids)"),
+        {"ids": _HOT_CONCEPT_IDS}
+    ).fetchall()
+    existing_concept_ids = {row[0] for row in existing_concept_rows}
+    concept_ids = [cid for cid in _HOT_CONCEPT_IDS if cid in existing_concept_ids][:20]
+
+    # 行业：按热门顺序取实际存在的 20 个
+    existing_industry_rows = db.execute(
+        text("SELECT DISTINCT industry FROM stock_basic WHERE industry IS NOT NULL AND industry != ''")
+    ).fetchall()
+    existing_industry_names = {row[0] for row in existing_industry_rows}
+    industry_ids = [name for name in _HOT_INDUSTRY_NAMES if name in existing_industry_names][:20]
+
+    defaults = [
+        {"sector_type": "concept", "sector_ids": concept_ids},
+        {"sector_type": "industry", "sector_ids": industry_ids},
+    ]
+
+    for item in defaults:
+        existing = db.query(SectorDefaultConfig).filter(
+            SectorDefaultConfig.sector_type == item["sector_type"]
+        ).first()
+        if existing:
+            continue
+        db.add(SectorDefaultConfig(
+            sector_type=item["sector_type"],
+            sector_ids=item["sector_ids"],
+            is_enabled=1,
+        ))
     db.commit()

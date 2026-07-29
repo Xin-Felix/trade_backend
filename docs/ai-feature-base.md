@@ -115,13 +115,23 @@ Context Builder 负责把 Tushare、交易所、新闻、用户自选等多个�
 
 ### 4.3 当前实现
 
-当前各服务仍以文本拼接方式组织 Context（如 `build_watchlist_context`、`build_portfolio_context`、`build_market_context`）。这种方式实现快、可读性好，但存在以下问题：
+所有 AI 功能的市场数据都从本地数据库读取，不在 AI 生成时调用外部 API（避免阻塞）：
 
-- 不同功能返回的 Context 结构不一致，难以复用。
-- 字段变更时需要同时改拼接代码和 Prompt。
-- 不方便做结构化校验和单元测试。
+| 数据 | 来源 | 说明 |
+|------|------|------|
+| A 股指数/个股 | 本地 `index_daily` / `stock_daily` 表 | 16:05~16:45 盘后同步 |
+| 全球指数 | 本地 `index_global` 表 | Tushare `index_global` 16:50 同步 |
+| 商品期货 | Tushare `fut_daily` + `fut_mapping` | 沪金/沪银/原油/沪铜主力合约 |
+| 外汇 | Tushare `fx_daily` | 美元人民币/欧元/日元 |
+| 北向资金 | 本地 `moneyflow_hsgt` 表 | 16:55 同步 |
+| 板块资金流 | 本地 `sector_moneyflow_*` 表 | 16:35 同步 |
+| 涨跌停/连板 | 本地 `limit_list_d` / `limit_step` 表 | 17:05~17:15 同步 |
+| 个股资金流向 | 本地 `stock_moneyflow` 表 | 16:25 同步 |
+| 分时 K 线 | 本地 `stock_intraday` 表 | 16:30 同步 |
 
-**后续规划**：逐步迁移为返回统一 JSON 结构（参见 4.2 节），再序列化为字符串传给 AI。迁移后每个 `build_xxx_context` 返回 `dict`，由 `ContextBuilder` 统一校验并渲染为最终输入。
+**批量生成时的数据复用模式**：通用市场数据（`build_market_context()`）只构建一次，所有用户共享传入。个股数据每个用户单独查询。
+
+**数据就绪校验**：AI 生成前会自动检查当天各核心数据源是否已同步完成，未就绪则拒绝生成并记录失败原因。
 
 ## 5. Prompt 三层架构
 

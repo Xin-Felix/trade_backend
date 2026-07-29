@@ -4,7 +4,7 @@
 手动同步操作统一通过 /scheduler/jobs/{job_id}/run 触发。
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, Depends, Query
 
 from app.core.dependencies import get_current_user
 from app.schemas.user import User
@@ -35,6 +35,7 @@ async def get_sync_status(
         {"table": "sector_moneyflow_concept", "title": "概念板块资金流", "date_col": "trade_date", "category": "资金流向"},
         {"table": "index_basic", "title": "指数基础", "date_col": None, "category": "指数数据"},
         {"table": "index_daily", "title": "指数日线", "date_col": "trade_date", "category": "指数数据"},
+        {"table": "index_global", "title": "全球指数", "date_col": "trade_date", "category": "指数数据"},
         {"table": "top_list", "title": "龙虎榜", "date_col": "trade_date", "category": "龙虎榜"},
         {"table": "top_inst", "title": "龙虎榜机构", "date_col": "trade_date", "category": "龙虎榜"},
         {"table": "ths_index", "title": "同花顺指数", "date_col": None, "category": "板块题材"},
@@ -68,6 +69,8 @@ async def get_sync_status(
         {"table": "cb_daily_local", "title": "可转债行情", "date_col": "trade_date", "category": "ETF/可转债"},
         # 分时数据
         {"table": "stock_intraday", "title": "分时K线", "date_col": "trade_date", "category": "盘中数据"},
+        # AI 生成数据
+        {"table": "market_pulse", "title": "市场温度", "date_col": "trade_date", "category": "AI数据"},
     ]
 
     db = SessionLocal()
@@ -114,6 +117,7 @@ async def get_sync_status(
                     "row_count": row_count,
                     "latest_date": latest_date,
                     "last_updated": last_updated,
+                    "sync_status": _get_sync_status(cfg, latest_date),
                 })
             except Exception:
                 db.rollback()
@@ -124,11 +128,66 @@ async def get_sync_status(
                     "row_count": 0,
                     "latest_date": None,
                     "last_updated": None,
+                    "sync_status": "无数据",
                 })
     finally:
         db.close()
 
     return {"success": True, "data": results}
+
+
+def _get_sync_status(cfg: dict, latest_date) -> str:
+    """判断数据同步状态。"""
+    from datetime import date, datetime, timedelta, timezone
+
+    # 中国时间
+    cn_tz = timezone(timedelta(hours=8))
+    today = datetime.now(cn_tz).date()
+    weekday = today.weekday()  # 0=周一
+
+    if not latest_date:
+        return "无数据"
+
+    # 解析日期
+    try:
+        if isinstance(latest_date, str):
+            latest = date.fromisoformat(latest_date)
+        else:
+            latest = latest_date
+    except (ValueError, TypeError):
+        return "未知"
+
+    # 没有日期列的表不需要判断（如 stock_basic）
+    if cfg.get("date_col") is None:
+        return "正常"
+
+    # 计算最新交易日应该是哪天
+    # 周一~周五且当前时间 > 16:30 → 最新应为今天
+    # 周一~周五且当前时间 < 16:30 → 最新应为昨天/上一个交易日
+    # 周六/周日 → 最新应为周五
+    now_time = datetime.now(cn_tz).time()
+    from datetime import time as dtime
+    data_ready_time = dtime(16, 30)
+
+    if weekday >= 5:
+        # 周末：最新应该是周五
+        expected = today - timedelta(days=weekday - 4)
+    elif now_time >= data_ready_time:
+        # 工作日 16:30 后：最新应该是今天
+        expected = today
+    else:
+        # 工作日 16:30 前：最新应该是上一个交易日
+        if weekday == 0:  # 周一早上
+            expected = today - timedelta(days=3)  # 上周五
+        else:
+            expected = today - timedelta(days=1)
+
+    if latest >= expected:
+        return "已同步"
+    elif (expected - latest).days <= 1:
+        return "同步中"
+    else:
+        return f"滞后{(expected - latest).days}天"
 
 
 # ============================================================
@@ -232,9 +291,9 @@ def _run_sync_concepts():
 
 @router.post("/concept")
 async def sync_concept_endpoint(
-    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
 ) -> dict:
-    """同步全部概念板块成分股映射（耗时较长，后台执行）。"""
-    background_tasks.add_task(_run_sync_concepts)
+    """同步全部概念板块成分股映射（耗时较长，独立线程执行）。"""
+    import threading
+    threading.Thread(target=_run_sync_concepts, daemon=True).start()
     return {"success": True, "data": {"status": "started", "message": "正在后台同步全部概念板块成分股，预计需要几分钟"}}

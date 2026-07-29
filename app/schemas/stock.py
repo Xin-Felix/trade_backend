@@ -8,6 +8,11 @@ class StockData(BaseModel):
     price: float
     change_percent: float
     pre_close: Optional[float] = None
+    open: Optional[float] = None
+    high: Optional[float] = None
+    low: Optional[float] = None
+    volume: Optional[float] = None
+    amount: Optional[float] = None
     updated_at: str
 
 

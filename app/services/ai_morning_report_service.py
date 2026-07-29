@@ -262,26 +262,46 @@ async def build_market_context(report_date: date) -> str:
 
 
 def _build_global_market_section() -> str:
-    """构建国际市场片段（欧美盘对今日A股的影响参考）。"""
+    """构建国际市场片段（从本地 index_global 表读取）。"""
     lines = ["国际市场（隔夜）："]
     try:
-        from app.services import global_market_service
+        from app.models.stock import IndexGlobal
+        from sqlalchemy import func as sqlfunc
 
-        indices = global_market_service.get_global_indices()
-        if indices:
-            for item in indices:
-                pct = item.get("change_percent", 0)
-                lines.append(
-                    f"- {item.get('name')}（{item.get('market')}）: "
-                    f"{item.get('price')} ({pct:+.2f}%)"
+        db = SessionLocal()
+        try:
+            latest_date = db.query(sqlfunc.max(IndexGlobal.trade_date)).scalar()
+            if latest_date:
+                rows = (
+                    db.query(IndexGlobal)
+                    .filter(IndexGlobal.trade_date == latest_date)
+                    .all()
                 )
+                name_map = {
+                    "HSI": "恒生指数", "HKTECH": "恒生科技", "XIN9": "国企指数",
+                    "N225": "日经225", "KS11": "韩国综合", "TWII": "台湾加权",
+                    "AS51": "澳洲标普200", "SENSEX": "印度孟买",
+                    "DJI": "道琼斯", "SPX": "标普500", "IXIC": "纳斯达克",
+                    "FTSE": "英国富时100", "GDAXI": "德国DAX",
+                }
+                for r in rows:
+                    name = name_map.get(r.ts_code, r.ts_code)
+                    pct = float(r.pct_chg) if r.pct_chg else 0
+                    close = float(r.close) if r.close else 0
+                    lines.append(f"- {name}（{r.ts_code}）: {close:.2f} ({pct:+.2f}%)")
+            else:
+                lines.append("全球指数：本地无数据")
+        finally:
+            db.close()
+
+        # 商品/汇率（Tushare fx_daily 速度快）
+        from app.services import global_market_service
         commodities = global_market_service.get_commodities_and_forex()
         if commodities:
+            lines.append("商品/汇率：")
             for item in commodities:
                 pct = item.get("change_percent", 0)
-                lines.append(
-                    f"- {item.get('name')}: {item.get('price')} ({pct:+.2f}%)"
-                )
+                lines.append(f"- {item.get('name')}: {item.get('price')} ({pct:+.2f}%)")
     except Exception as exc:
         lines.append(f"国际市场数据获取失败：{exc}")
     return "\n".join(lines) if len(lines) > 1 else "国际市场：暂无数据。"

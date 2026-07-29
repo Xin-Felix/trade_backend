@@ -103,14 +103,23 @@ async def manual_generate_morning_report(
     body: Optional[GenerateRequest] = None,
     db: Session = Depends(get_db),
 ):
-    """手动触发晨报生成（指定日期，默认今天）。"""
+    """手动触发晨报生成（后台线程执行）。"""
     if body is None:
         body = GenerateRequest()
     target_date = _parse_date(body.report_date) or date.today()
-    report = await ai_morning_report_service.generate_morning_report(
-        db, target_date, force=True
-    )
-    return OperationResponse(message=f"晨报已生成，状态：{report.status}")
+
+    import threading
+
+    def _run():
+        from app.db.base import SessionLocal
+        _db = SessionLocal()
+        try:
+            ai_morning_report_service.generate_morning_report_sync(_db, target_date, force=True)
+        finally:
+            _db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return OperationResponse(message="晨报生成任务已启动，请稍后刷新查看结果")
 
 
 @router.post("/{report_id}/regenerate", response_model=OperationResponse)
@@ -118,15 +127,25 @@ async def regenerate_morning_report(
     report_id: int,
     db: Session = Depends(get_db),
 ):
-    """重新生成指定晨报记录。"""
+    """重新生成指定晨报记录（后台线程执行）。"""
     report = db.query(AiMorningReport).filter(AiMorningReport.id == report_id).first()
     if report is None:
         raise HTTPException(status_code=404, detail="晨报记录不存在")
 
-    new_report = await ai_morning_report_service.generate_morning_report(
-        db, report.report_date, force=True
-    )
-    return OperationResponse(message=f"晨报已重新生成，状态：{new_report.status}")
+    report_date = report.report_date
+
+    import threading
+
+    def _run():
+        from app.db.base import SessionLocal
+        _db = SessionLocal()
+        try:
+            ai_morning_report_service.generate_morning_report_sync(_db, report_date, force=True)
+        finally:
+            _db.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return OperationResponse(message="晨报重新生成任务已启动，请稍后刷新查看结果")
 
 
 @router.put("/{report_id}", response_model=AiMorningReportDetailResponse)

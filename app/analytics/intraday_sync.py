@@ -23,8 +23,8 @@ from app.db.base import Base, SessionLocal
 
 logger = logging.getLogger(__name__)
 
-# 并发线程数（4 线程是最佳平衡：100% 成功率，不会被限流）
-_MAX_WORKERS = 4
+# 并发线程数（Tushare 付费代理，高并发采集）
+_MAX_WORKERS = 12
 
 
 # ============================================================
@@ -65,8 +65,8 @@ def _get_proxy_config() -> tuple:
     return url, token
 
 
-def _call_tushare(api_name: str, timeout: int = 15, **params) -> list[dict]:
-    """直接 POST 调用 Tushare 代理，返回记录列表（带超时保护）。
+def _call_tushare(api_name: str, timeout: int = 15, max_retries: int = 3, **params) -> list[dict]:
+    """直接 POST 调用 Tushare 代理，返回记录列表（带超时保护和重试）。
 
     Returns:
         [{"field1": val1, ...}, ...] 或空列表
@@ -78,19 +78,23 @@ def _call_tushare(api_name: str, timeout: int = 15, **params) -> list[dict]:
         "params": params,
         "fields": "",
     }
-    try:
-        r = _requests.post(url, json=payload, timeout=(5, timeout))
-        data = r.json()
-        if data.get("code") != 0:
+    for attempt in range(max_retries):
+        try:
+            r = _requests.post(url, json=payload, timeout=(5, timeout))
+            data = r.json()
+            if data.get("code") != 0:
+                return []
+            raw = data.get("data")
+            if not raw:
+                return []
+            fields = raw.get("fields", [])
+            items = raw.get("items", [])
+            return [dict(zip(fields, row)) for row in items]
+        except Exception:
+            if attempt < max_retries - 1:
+                _time.sleep(0.5 * (attempt + 1))  # 递增等待: 0.5s, 1s
+                continue
             return []
-        raw = data.get("data")
-        if not raw:
-            return []
-        fields = raw.get("fields", [])
-        items = raw.get("items", [])
-        return [dict(zip(fields, row)) for row in items]
-    except Exception:
-        return []
 
 
 def _fetch_intraday_one(ts_code: str, start_dt: str, end_dt: str) -> list[dict]:
@@ -609,6 +613,7 @@ def _fetch_intraday_one_akshare(ts_code: str, trade_date: date) -> list[dict]:
     """通过 akshare 获取单只股票指定交易日的 1 分钟分时数据。
 
     当天盘中数据用 akshare 实时拉取，Tushare 收盘后质量更高。
+    若 akshare 连接失败（代理问题），静默返回空列表，不影响其他股票。
     """
     import akshare as ak
 
@@ -624,6 +629,9 @@ def _fetch_intraday_one_akshare(ts_code: str, trade_date: date) -> list[dict]:
             period="1",
             adjust="",
         )
+    except (ConnectionError, OSError) as e:
+        # 代理/网络问题，静默跳过，不打 WARNING 刷屏
+        return []
     except Exception as e:
         logger.warning(f"[Intraday] akshare 获取 {ts_code} {trade_date} 失败: {e}")
         return []
@@ -672,17 +680,9 @@ def sync_all_intraday_mixed(days: int = 5) -> dict:
 
     today = date.today()
     today_str = today.strftime("%Y%m%d")
-    now_time = datetime.now().time()
-    use_tushare_today = now_time >= datetime.strptime("16:00", "%H:%M").time()
 
-    # Tushare 覆盖的日期范围：历史日期 + （16:00 以后包含今天）
-    tushare_dates = [d for d in trade_dates if d != today_str]
-    if use_tushare_today and today_str in trade_dates:
-        tushare_dates.append(today_str)
-
-    akshare_dates = []
-    if not use_tushare_today and today_str in trade_dates:
-        akshare_dates.append(today_str)
+    # 全部使用 Tushare（包括当天数据，需开通分时权限）
+    tushare_dates = trade_dates
 
     tushare_start_dt = None
     tushare_end_dt = None
@@ -693,10 +693,8 @@ def sync_all_intraday_mixed(days: int = 5) -> dict:
         tushare_end_dt = f"{latest[:4]}-{latest[4:6]}-{latest[6:]} 15:00:00"
 
     _print(f"={'=' * 59}")
-    _print(f"  全市场分时K线采集（混合源）")
+    _print(f"  全市场分时K线采集（Tushare）")
     _print(f"  交易日: {trade_dates}")
-    _print(f"  Tushare 覆盖: {tushare_dates or '无'}")
-    _print(f"  AKShare 覆盖: {akshare_dates or '无'}")
     _print(f"={'=' * 59}")
 
     # 获取所有 A 股代码
@@ -738,8 +736,6 @@ def sync_all_intraday_mixed(days: int = 5) -> dict:
         records: list[dict] = []
         if tushare_start_dt and tushare_end_dt:
             records.extend(_fetch_intraday_one(ts_code, tushare_start_dt, tushare_end_dt))
-        for td in akshare_dates:
-            records.extend(_fetch_intraday_one_akshare(ts_code, today))
         return ts_code, records
 
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:

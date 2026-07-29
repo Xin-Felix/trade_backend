@@ -11,6 +11,7 @@ from app.models.membership import (
     UserFeatureUsage,
     UserMembership,
 )
+from app.models.sector_default_config import SectorDefaultConfig
 from app.models.points import FeaturePermission, PointRecord, PointRule, UserPoint
 from app.models.analysis import (
     BrokerRecommend,
@@ -41,11 +42,13 @@ from app.models.analysis import (
 )
 from app.models.data_source import DataSource
 from app.models.global_market_log import GlobalMarketLog
+from app.models.market_pulse import MarketPulse
 from app.models.scheduler import SchedulerJob
 from app.models.scheduler_log import SchedulerLog
 from app.models.stock import (
     IndexBasic,
     IndexDaily,
+    IndexGlobal,
     MoneyflowHsgt,
     SectorMoneyflowConcept,
     SectorMoneyflowIndustry,

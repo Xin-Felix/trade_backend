@@ -205,7 +205,7 @@ async def regenerate_daily_review(
         _db = SessionLocal()
         try:
             daily_review_service.generate_daily_review_for_user_sync(
-                _db, user_id, report_date, level=level
+                _db, user_id, report_date, level=level, force=True
             )
         finally:
             _db.close()
@@ -314,11 +314,11 @@ async def retry_failed_daily_reviews(
     import threading
 
     def _run_retry():
-        import asyncio
         from app.db.base import SessionLocal
+        from app.services.daily_review_service import _run_async
         _db = SessionLocal()
         try:
-            asyncio.run(daily_review_service.retry_failed_reviews(_db, target_date, level=level))
+            _run_async(daily_review_service.retry_failed_reviews(_db, target_date, level=level))
         finally:
             _db.close()
 

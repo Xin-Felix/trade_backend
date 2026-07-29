@@ -275,21 +275,97 @@ async def _build_watchlist_context(db: Session, user: UserModel, market_context:
 # ---------------------------------------------------------------------------
 
 
+def _check_data_readiness(db: Session, today: date, latest_trade: date | None) -> dict:
+    """检查当天交易日的各核心数据是否已同步完成。
+
+    Returns:
+        {
+            "is_trading_day": bool,
+            "has_today_data": bool,
+            "errors": list[str],  # 未就绪的数据项
+            "summary": str,       # 一句话概括
+        }
+    """
+    from app.models.stock import IndexDaily, StockDaily, StockMoneyflow, MoneyflowHsgt, IndexGlobal
+
+    errors = []
+    is_td = is_trading_day(db, today)
+
+    # 如果不是交易日，数据用最新即可，不需要校验当天
+    if not is_td:
+        return {
+            "is_trading_day": False,
+            "has_today_data": False,
+            "errors": [],
+            "summary": f"非交易日，使用最新交易日 {latest_trade} 数据",
+        }
+
+    has_today = latest_trade == today if latest_trade else False
+
+    # 校验各数据源最新日期是否为今天
+    checks = [
+        ("A股日K", StockDaily, StockDaily.trade_date),
+        ("指数日线", IndexDaily, IndexDaily.trade_date),
+        ("北向资金", MoneyflowHsgt, MoneyflowHsgt.trade_date),
+    ]
+
+    for name, model, date_col in checks:
+        latest = db.query(func.max(date_col)).scalar()
+        if latest != today:
+            errors.append(f"{name}最新={latest}(需要{today})")
+
+    # 全球指数允许滞后1天（国际市场有时差）
+    global_latest = db.query(func.max(IndexGlobal.trade_date)).scalar()
+    if global_latest and (today - global_latest).days > 2:
+        errors.append(f"全球指数最新={global_latest}(滞后超2天)")
+
+    if errors:
+        summary = f"交易日{today}，{len(errors)}项数据未就绪"
+    else:
+        summary = f"交易日{today}，所有数据已就绪"
+
+    return {
+        "is_trading_day": True,
+        "has_today_data": has_today,
+        "errors": errors,
+        "summary": summary,
+    }
+
+
 def build_market_context() -> str:
     """构建通用市场数据上下文（大盘、国际、北向、涨跌停、板块）。
 
     此函数的输出不依赖用户，所有用户复盘共享同一份。
     批量生成时应只调用一次，然后传入每个用户的 build_watchlist_context。
+
+    Raises:
+        RuntimeError: 当天交易日数据尚未同步完成时抛出。
     """
-    # 确定最新交易日
+    today = _cn_today()
+
+    # 数据就绪检查：校验当天各核心数据源是否已同步
     db = SessionLocal()
     try:
         latest_trade = get_latest_trade_date(db)
+        readiness = _check_data_readiness(db, today, latest_trade)
     finally:
         db.close()
 
-    today = _cn_today()
-    date_header = f"【复盘日期】{today.isoformat()}（最新交易日数据：{latest_trade.isoformat() if latest_trade else '未知'}）"
+    if readiness["errors"]:
+        error_detail = "; ".join(readiness["errors"])
+        logger.warning(f"[DailyReview] 数据就绪检查未通过: {error_detail}")
+        # 非交易日允许用最新数据，交易日数据不全则报错
+        if readiness["is_trading_day"] and not readiness["has_today_data"]:
+            raise RuntimeError(
+                f"当天({today})数据尚未同步完成，无法生成复盘。"
+                f"详情: {error_detail}。请确认盘后数据同步任务已执行。"
+            )
+
+    data_date = latest_trade if latest_trade else today
+    date_header = (
+        f"【复盘日期】{today.isoformat()}（数据交易日：{data_date.isoformat()}）\n"
+        f"数据就绪状态：{readiness['summary']}"
+    )
 
     sections = [
         date_header,
@@ -338,22 +414,49 @@ def _build_market_index_section() -> str:
 
 
 def _build_global_market_section() -> str:
-    """构建欧美及国际市场行情片段。"""
-    lines = ["【国际市场（欧美盘/商品/汇率）】"]
+    """构建欧美及国际市场行情片段（从本地 index_global 表读取）。"""
+    lines = ["【国际市场（全球指数/商品/汇率）】"]
+
+    # 全球指数 — 从本地 index_global 表读取最新一天数据
+    try:
+        from app.models.stock import IndexGlobal
+        db = SessionLocal()
+        try:
+            # 取最新交易日
+            latest_date = db.query(func.max(IndexGlobal.trade_date)).scalar()
+            if latest_date:
+                rows = (
+                    db.query(IndexGlobal)
+                    .filter(IndexGlobal.trade_date == latest_date)
+                    .all()
+                )
+                # ts_code -> 中文名映射
+                name_map = {
+                    "HSI": "恒生指数", "HKTECH": "恒生科技", "XIN9": "国企指数",
+                    "N225": "日经225", "KS11": "韩国综合", "TWII": "台湾加权",
+                    "AS51": "澳洲标普200", "SENSEX": "印度孟买", "CKLSE": "马来综合",
+                    "DJI": "道琼斯", "SPX": "标普500", "IXIC": "纳斯达克",
+                    "FTSE": "英国富时100", "GDAXI": "德国DAX",
+                }
+                if rows:
+                    lines.append(f"全球指数（{latest_date.isoformat()}）：")
+                    for r in rows:
+                        name = name_map.get(r.ts_code, r.ts_code)
+                        pct = float(r.pct_chg) if r.pct_chg else 0
+                        close = float(r.close) if r.close else 0
+                        lines.append(f"- {name}（{r.ts_code}）: {close:.2f} ({pct:+.2f}%)")
+                else:
+                    lines.append("全球指数：暂无数据")
+            else:
+                lines.append("全球指数：本地无数据（请检查 sync_index_global 是否正常）")
+        finally:
+            db.close()
+    except Exception as exc:
+        lines.append(f"全球指数读取失败：{exc}")
+
+    # 商品/汇率 — Tushare fx_daily 速度快，保留实时拉取；akshare 商品如果拉不到就跳过
     try:
         from app.services import global_market_service
-
-        indices = global_market_service.get_global_indices()
-        if indices:
-            for item in indices:
-                pct = item.get("change_percent", 0)
-                lines.append(
-                    f"- {item.get('name')}（{item.get('market')}）: "
-                    f"{item.get('price')} ({pct:+.2f}%)"
-                )
-        else:
-            lines.append("全球指数：暂无数据")
-
         commodities = global_market_service.get_commodities_and_forex()
         if commodities:
             lines.append("商品/汇率：")
@@ -363,7 +466,8 @@ def _build_global_market_section() -> str:
                     f"- {item.get('name')}: {item.get('price')} ({pct:+.2f}%)"
                 )
     except Exception as exc:
-        lines.append(f"国际市场数据获取失败：{exc}")
+        lines.append(f"商品/汇率获取失败：{exc}")
+
     return "\n".join(lines)
 
 
@@ -604,6 +708,20 @@ def _build_single_portfolio_context(item) -> str:
     except Exception:
         pass
 
+    # 6. 当天 15 分钟分时 K 线（走势结构：冲高回落/震荡/尾盘拉升等）
+    try:
+        intraday = stock_service.get_intraday_klines(code, period="15", limit=16)
+        if intraday:
+            lines.append("  当日15分钟K线走势：")
+            for k in intraday:
+                time_str = k.datetime[-8:-3] if hasattr(k, 'datetime') else ""  # HH:MM
+                lines.append(
+                    f"    {time_str}: 开={k.open:.2f} 高={k.high:.2f} "
+                    f"低={k.low:.2f} 收={k.close:.2f}"
+                )
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 
@@ -707,10 +825,10 @@ async def generate_daily_review_for_user(
 
 
 def generate_daily_review_for_user_sync(
-    db: Session, user_id: int, report_date: date, level: str = "standard"
+    db: Session, user_id: int, report_date: date, level: str = "standard", force: bool = False
 ) -> DailyReview:
     """为单个用户生成指定日期、指定层级的复盘（同步包装，供定时任务使用）。"""
-    return _run_async(generate_daily_review_for_user(db, user_id, report_date, level=level))
+    return _run_async(generate_daily_review_for_user(db, user_id, report_date, level=level, force=force))
 
 
 async def _generate_one_user(

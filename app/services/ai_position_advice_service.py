@@ -38,11 +38,9 @@ def get_latest_trade_date(db: Session) -> date | None:
 
 
 def is_trading_day(db: Session, target_date: date) -> bool:
-    """判断指定日期是否为交易日（本地有 stock_daily 数据）。"""
-    latest = get_latest_trade_date(db)
-    if latest is None:
-        return False
-    return latest == target_date
+    """判断指定日期是否为交易日（复用 daily_review_service 的三层 fallback 逻辑）。"""
+    from app.services.daily_review_service import is_trading_day as _is_trading_day
+    return _is_trading_day(db, target_date)
 
 
 # ---------------------------------------------------------------------------
@@ -143,8 +141,12 @@ def get_user_portfolio_data(db: Session, user_id: int) -> list[dict]:
     return result
 
 
-async def build_portfolio_context(db: Session, user_id: int, include_watchlist: bool = True) -> str:
-    """基于用户持仓组装 AI 上下文文本（增强版：含市场全貌+持仓深度数据）。"""
+async def build_portfolio_context(db: Session, user_id: int, include_watchlist: bool = True, market_context: str | None = None) -> str:
+    """基于用户持仓组装 AI 上下文文本（增强版：含市场全貌+持仓深度数据）。
+
+    Args:
+        market_context: 预构建的通用市场数据。为 None 时当场构建。批量生成时应传入复用。
+    """
     from app.services.daily_review_service import build_market_context as build_daily_market_context
 
     user = (
@@ -162,9 +164,10 @@ async def build_portfolio_context(db: Session, user_id: int, include_watchlist: 
     )
     parts = [f"用户：{user.name or user.email}"]
 
-    # 通用市场数据
-    market_ctx = build_daily_market_context()
-    parts.append(market_ctx)
+    # 通用市场数据（复用或当场构建）
+    if market_context is None:
+        market_context = build_daily_market_context()
+    parts.append(market_context)
 
     if rows:
         # 持仓汇总
@@ -288,7 +291,8 @@ def _run_async(coro):
 
 
 async def generate_position_advice_for_user(
-    db: Session, user_id: int, report_date: date, force: bool = False
+    db: Session, user_id: int, report_date: date, force: bool = False,
+    market_context: str | None = None,
 ) -> AiPositionAdvice:
     """为单个用户生成指定日期的仓位建议（异步）。
 
@@ -315,7 +319,7 @@ async def generate_position_advice_for_user(
     db.commit()
 
     try:
-        context = await build_portfolio_context(db, user_id)
+        context = await build_portfolio_context(db, user_id, market_context=market_context)
         result = await _generate_advice_content(user, context)
         advice.summary = result.get("summary")
         advice.content = result.get("content")
@@ -340,13 +344,16 @@ def generate_position_advice_for_user_sync(
 
 
 async def _generate_one_user(
-    user_id: int, report_date: date, semaphore: asyncio.Semaphore
+    user_id: int, report_date: date, semaphore: asyncio.Semaphore,
+    market_context: str | None = None,
 ) -> tuple[int, bool]:
     """为一个用户生成仓位建议（带并发控制），使用独立 session。"""
     async with semaphore:
         db = SessionLocal()
         try:
-            advice = await generate_position_advice_for_user(db, user_id, report_date)
+            advice = await generate_position_advice_for_user(
+                db, user_id, report_date, market_context=market_context
+            )
             return (user_id, advice.status == "success")
         except Exception:
             logger.exception(f"[AiPositionAdvice] 批量生成时用户 {user_id} 失败")
@@ -424,11 +431,16 @@ def generate_position_advices_for_all_members(
     finally:
         db.close()
 
+    # 通用市场数据只构建一次，所有用户共享
+    from app.services.daily_review_service import build_market_context as build_daily_market_context
+    logger.info("[AiPositionAdvice] 构建通用市场上下文...")
+    market_context = build_daily_market_context()
+
     semaphore = asyncio.Semaphore(max_concurrent)
 
     async def _run_all():
         return await asyncio.gather(
-            *[_generate_one_user(uid, report_date, semaphore) for uid in eligible_user_ids]
+            *[_generate_one_user(uid, report_date, semaphore, market_context=market_context) for uid in eligible_user_ids]
         )
 
     results = _run_async(_run_all())

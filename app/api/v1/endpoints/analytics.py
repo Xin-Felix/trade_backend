@@ -11,9 +11,29 @@ from sqlalchemy import text
 
 from app.core.dependencies import get_current_user, require_feature
 from app.db.base import SessionLocal
+from app.models.sector_default_config import SectorDefaultConfig
 from app.schemas.user import User
 
 router = APIRouter()
+
+
+def _get_default_sector_ids(sector_type: str, fallback: list[str]) -> list[str]:
+    """从后台配置读取默认勾选的板块/概念ID，未配置则返回兜底列表。"""
+    db = SessionLocal()
+    try:
+        config = (
+            db.query(SectorDefaultConfig)
+            .filter(
+                SectorDefaultConfig.sector_type == sector_type,
+                SectorDefaultConfig.is_enabled == 1,
+            )
+            .first()
+        )
+        if config and config.sector_ids:
+            return list(config.sector_ids)
+    finally:
+        db.close()
+    return fallback
 
 
 def _resolve_trade_date(trade_date_str: Optional[str]) -> date:
@@ -150,11 +170,15 @@ async def get_available_industries(
         for row in rows
     ]
 
+    # 从后台配置读取默认勾选行业，未配置则取前 20 个
+    default_ids = _get_default_sector_ids("industry", [row[0] for row in rows[:20]])
+
     return {
         "success": True,
         "data": {
             "industries": industries,
             "total": len(industries),
+            "default_ids": default_ids,
         },
     }
 
@@ -166,6 +190,7 @@ async def get_available_concepts(
     """获取可选的概念板块列表（含默认推荐）。
 
     返回所有概念及其成分股数量，并标记推荐的默认概念。
+    默认推荐ID从后台配置读取，未配置则使用兜底热门概念。
     用途：iOS 端概念选择器。
     """
     db = SessionLocal()
@@ -180,8 +205,8 @@ async def get_available_concepts(
     finally:
         db.close()
 
-    # 默认推荐概念（排除过于宽泛的如融资融券/沪深股通）
-    default_ids = [
+    # 兜底热门概念（排除过于宽泛的如融资融券/沪深股通）
+    fallback_default_ids = [
         "885728.TI",  # 人工智能
         "885756.TI",  # 芯片概念
         "885431.TI",  # 新能源汽车
@@ -195,6 +220,7 @@ async def get_available_concepts(
         "885806.TI",  # 华为概念
         "885800.TI",  # 消费电子概念
     ]
+    default_ids = _get_default_sector_ids("concept", fallback_default_ids)
 
     concepts = []
     for row in rows:

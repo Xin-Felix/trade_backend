@@ -129,14 +129,12 @@ async def manual_generate_position_advice(
     body: Optional[GenerateRequest] = None,
     db: Session = Depends(get_db),
 ):
-    """手动触发仓位建议生成。
-
-    - 传 user_public_id：只为该用户生成（同步返回结果）。
-    - 不传 user_public_id：为所有 active 会员生成（后台线程执行，接口立即返回已启动）。
-    """
+    """手动触发仓位建议生成（后台线程执行，接口立即返回）。"""
     if body is None:
         body = GenerateRequest()
     target_date = _parse_date(body.report_date) or date.today()
+
+    import threading
 
     if body.user_public_id:
         user = (
@@ -146,14 +144,22 @@ async def manual_generate_position_advice(
         )
         if user is None:
             raise HTTPException(status_code=404, detail="用户不存在")
-        advice = await ai_position_advice_service.generate_position_advice_for_user(
-            db, user.id, target_date, force=True
-        )
-        return OperationResponse(message=f"仓位建议已生成，状态：{advice.status}")
+        user_id = user.id
 
-    # 批量触发：后台线程执行，避免阻塞接口
-    import threading
+        def _run_single():
+            from app.db.base import SessionLocal
+            _db = SessionLocal()
+            try:
+                ai_position_advice_service.generate_position_advice_for_user_sync(
+                    _db, user_id, target_date
+                )
+            finally:
+                _db.close()
 
+        threading.Thread(target=_run_single, daemon=True).start()
+        return OperationResponse(message="仓位建议生成任务已启动，请稍后刷新查看结果")
+
+    # 批量触发
     def _run_job():
         ai_position_advice_service.generate_position_advices_for_all_members(
             report_date=target_date
@@ -168,7 +174,7 @@ async def regenerate_position_advice(
     advice_id: int,
     db: Session = Depends(get_db),
 ):
-    """重新生成指定仓位建议记录。"""
+    """重新生成指定仓位建议记录（后台线程执行）。"""
     advice = (
         db.query(AiPositionAdvice)
         .filter(AiPositionAdvice.id == advice_id, AiPositionAdvice.is_deleted == 0)
@@ -177,10 +183,23 @@ async def regenerate_position_advice(
     if advice is None:
         raise HTTPException(status_code=404, detail="仓位建议记录不存在")
 
-    new_advice = await ai_position_advice_service.generate_position_advice_for_user(
-        db, advice.user_id, advice.report_date, force=True
-    )
-    return OperationResponse(message=f"仓位建议已重新生成，状态：{new_advice.status}")
+    user_id = advice.user_id
+    report_date = advice.report_date
+
+    import threading
+
+    def _run_regen():
+        from app.db.base import SessionLocal
+        _db = SessionLocal()
+        try:
+            ai_position_advice_service.generate_position_advice_for_user_sync(
+                _db, user_id, report_date
+            )
+        finally:
+            _db.close()
+
+    threading.Thread(target=_run_regen, daemon=True).start()
+    return OperationResponse(message="仓位建议重新生成任务已启动，请稍后刷新查看结果")
 
 
 @router.put("/{advice_id}", response_model=AiPositionAdviceDetailResponse)
