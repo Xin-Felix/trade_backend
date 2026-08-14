@@ -10,6 +10,9 @@ import threading
 import time as _time
 from datetime import date, datetime, timedelta, timezone
 
+# 中国时区（固定 +8，不依赖系统时区）
+CN_TZ = timezone(timedelta(hours=8))
+
 from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -21,6 +24,7 @@ logger = logging.getLogger(__name__)
 scheduler = BackgroundScheduler(
     jobstores={"default": MemoryJobStore()},
     job_defaults={"coalesce": True, "max_instances": 1},
+    timezone="Asia/Shanghai",
 )
 
 
@@ -33,7 +37,7 @@ def _log_execution(job_id: str, func, kwargs):
     log_entry = SchedulerLog(
         job_id=job_id,
         status="running",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(CN_TZ),
     )
     db.add(log_entry)
     db.commit()
@@ -46,13 +50,13 @@ def _log_execution(job_id: str, func, kwargs):
         log_entry.status = "success"
         log_entry.message = f"执行成功，耗时 {elapsed} 秒"
         log_entry.duration_seconds = elapsed
-        log_entry.finished_at = datetime.now(timezone.utc)
+        log_entry.finished_at = datetime.now(CN_TZ)
     except Exception as e:
         elapsed = int(_time.time() - start)
         log_entry.status = "failed"
         log_entry.message = str(e)[:2000]
         log_entry.duration_seconds = elapsed
-        log_entry.finished_at = datetime.now(timezone.utc)
+        log_entry.finished_at = datetime.now(CN_TZ)
         logger.error(f"[Scheduler] 任务 {job_id} 执行失败: {e}")
     finally:
         db.commit()
@@ -78,6 +82,46 @@ def job_sync_daily_kline(days: int = 1):
         logger.info("[Scheduler] 日K线同步完成")
     except Exception as e:
         logger.error(f"[Scheduler] 日K线同步失败: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def job_sync_weekly_kline(days: int = 30):
+    """同步周K线数据。"""
+    from app.db.base import SessionLocal
+    from app.services.data_sync_service import _sync_klines_by_date
+
+    logger.info(f"[Scheduler] 开始同步周K线，最近 {days} 天")
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+    db = SessionLocal()
+    try:
+        _sync_klines_by_date(db, "W", start_date, end_date)
+        db.commit()
+        logger.info("[Scheduler] 周K线同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 周K线同步失败: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def job_sync_monthly_kline(days: int = 60):
+    """同步月K线数据。"""
+    from app.db.base import SessionLocal
+    from app.services.data_sync_service import _sync_klines_by_date
+
+    logger.info(f"[Scheduler] 开始同步月K线，最近 {days} 天")
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+    db = SessionLocal()
+    try:
+        _sync_klines_by_date(db, "M", start_date, end_date)
+        db.commit()
+        logger.info("[Scheduler] 月K线同步完成")
+    except Exception as e:
+        logger.error(f"[Scheduler] 月K线同步失败: {e}")
         db.rollback()
     finally:
         db.close()
@@ -343,6 +387,14 @@ def job_sync_institution(days: int = 1):
     logger.info("[Scheduler] 机构数据同步完成")
 
 
+def job_sync_margin(days: int = 1):
+    """单独同步融资融券明细（每日盘后）。"""
+    from app.services.analysis_sync_service import sync_margin_detail
+    logger.info(f"[Scheduler] 开始同步融资融券，最近 {days} 天")
+    sync_margin_detail(days=days)
+    logger.info("[Scheduler] 融资融券同步完成")
+
+
 def job_sync_research(days: int = 3):
     """同步研报数据（券商金股+盈利预测）。"""
     from app.services.analysis_sync_service import sync_broker_recommend, sync_report_rc
@@ -570,6 +622,27 @@ def job_generate_market_pulse(**kwargs):
         logger.error(f"[Scheduler] 市场温度生成失败: {e}")
 
 
+def job_mc_pipeline(days: int = 1):
+    """运行市场拥挤度数据管道（aggregates + congestion + option）。
+
+    依赖 sync_daily_kline 和 sync_daily_basic 已完成。
+    建议在盘后核心同步完成后执行（17:30+）。
+    """
+    from app.market.pipeline import run_pipeline
+
+    logger.info("[Scheduler] 开始运行市场拥挤度管道")
+    try:
+        result = run_pipeline(force=False)
+        if result.get("skipped"):
+            logger.info("[Scheduler] MC pipeline 跳过: %s", result.get("reason"))
+        elif result.get("ok"):
+            logger.info("[Scheduler] MC pipeline 完成，耗时 %.0fs", result.get("cost_s", 0))
+        else:
+            logger.error("[Scheduler] MC pipeline 部分失败: %s", result.get("failed"))
+    except Exception as e:
+        logger.error(f"[Scheduler] MC pipeline 失败: {e}")
+
+
 # ============================================================
 # 任务注册表：job_id -> 函数映射
 # ============================================================
@@ -577,6 +650,8 @@ def job_generate_market_pulse(**kwargs):
 JOB_REGISTRY: dict[str, callable] = {
     # 原有任务
     "sync_daily_kline": job_sync_daily_kline,
+    "sync_weekly_kline": job_sync_weekly_kline,
+    "sync_monthly_kline": job_sync_monthly_kline,
     "sync_daily_basic": job_sync_daily_basic,
     "sync_sector_moneyflow": job_sync_sector_moneyflow,
     "sync_stock_moneyflow": job_sync_stock_moneyflow,
@@ -595,6 +670,7 @@ JOB_REGISTRY: dict[str, callable] = {
     "sync_limit_data": job_sync_limit_data,
     "sync_concept_hot": job_sync_concept_hot,
     "sync_institution": job_sync_institution,
+    "sync_margin": job_sync_margin,
     "sync_research": job_sync_research,
     "sync_macro": job_sync_macro,
     # 分时K线
@@ -605,15 +681,15 @@ JOB_REGISTRY: dict[str, callable] = {
     # 会员任务
     "expire_memberships": job_expire_memberships,
     "grant_monthly_points": job_grant_monthly_points,
-    "generate_daily_reviews": job_generate_daily_reviews,
-    "generate_ai_position_advices": job_generate_ai_position_advices,
-    "generate_ai_morning_report": job_generate_ai_morning_report,
-    "generate_market_pulse": job_generate_market_pulse,
+    # 市场拥挤度（从 market_congestion 迁移）
+    "mc_pipeline": job_mc_pipeline,
 }
 
 JOB_DESCRIPTIONS: dict[str, str] = {
     # 盘后核心（16:00-17:30）
     "sync_daily_kline": "[盘后] 日K线行情",
+    "sync_weekly_kline": "[每周] 周K线行情",
+    "sync_monthly_kline": "[每月] 月K线行情",
     "sync_daily_basic": "[盘后] 日线因子（PE/PB/换手率/市值）",
     "sync_stock_moneyflow": "[盘后] 个股资金流向",
     "sync_sector_moneyflow": "[盘后] 板块资金流（行业+概念）",
@@ -628,6 +704,7 @@ JOB_DESCRIPTIONS: dict[str, str] = {
     "sync_stock_basic": "[每日] 股票基础信息+上市公司详情",
     # 每周（周六）
     "sync_institution": "[每周] 机构行为（北向持仓+股东人数+增减持+筹码+两融）",
+    "sync_margin": "[盘后] 融资融券明细（每日更新）",
     # 每月（1号）
     "sync_macro": "[每月] 宏观数据（指数估值+申万行业+CPI+PMI+LPR+社融+指数权重）",
     # 综合
@@ -638,9 +715,8 @@ JOB_DESCRIPTIONS: dict[str, str] = {
     # 会员
     "expire_memberships": "[会员] 每日过期会员处理",
     "grant_monthly_points": "[会员] 每日月度积分发放",
-    "generate_daily_reviews": "[AI] 每日自动生成全市场一句话复盘 + 会员深度复盘",
-    "generate_ai_position_advices": "[AI] 每日自动生成会员仓位建议",
-    "generate_ai_morning_report": "[AI] 每日自动生成市场晨报",
+    # 市场拥挤度
+    "mc_pipeline": "[盘后] 市场拥挤度管道（汇总指标+拥挤度预跑+期权）",
 }
 
 
@@ -651,6 +727,8 @@ JOB_DESCRIPTIONS: dict[str, str] = {
 JOB_META: dict[str, dict] = {
     # 盘后核心
     "sync_daily_kline": {"group": "盘后核心", "desc": "日K线行情", "default_days": 1, "order": 1},
+    "sync_weekly_kline": {"group": "周期同步", "desc": "周K线行情", "default_days": 30, "order": 1.5},
+    "sync_monthly_kline": {"group": "周期同步", "desc": "月K线行情", "default_days": 60, "order": 1.6},
     "sync_daily_basic": {"group": "盘后核心", "desc": "日线因子（PE/PB/换手率/市值）", "default_days": 1, "order": 2},
     "sync_stock_moneyflow": {"group": "盘后核心", "desc": "个股资金流向", "default_days": 1, "order": 3},
     "sync_sector_moneyflow": {"group": "盘后核心", "desc": "板块资金流（行业+概念）", "default_days": 1, "order": 4},
@@ -667,17 +745,16 @@ JOB_META: dict[str, dict] = {
     "sync_stock_basic": {"group": "每日同步", "desc": "股票基础信息+上市公司详情", "default_days": 1, "order": 13},
     # 周/月
     "sync_institution": {"group": "周期同步", "desc": "机构行为（北向持仓+股东人数+增减持+筹码+两融）", "default_days": 1, "order": 14},
+    "sync_margin": {"group": "盘后核心", "desc": "融资融券明细（每日盘后更新）", "default_days": 1, "order": 10},
     "sync_macro": {"group": "周期同步", "desc": "宏观数据（指数估值+申万行业+CPI+PMI+LPR+社融）", "default_days": 1, "order": 15},
     # 盘中
     "sync_intraday_realtime": {"group": "盘中数据", "desc": "实时分时快照（每分钟，仅交易时间执行）", "default_days": 1, "order": 16},
     "sync_intraday": {"group": "盘中数据", "desc": "分时K线历史补全（盘后Tushare拉取）", "default_days": 5, "order": 17},
-    # AI
-    "generate_ai_morning_report": {"group": "AI生成", "desc": "每日AI晨报", "default_days": 1, "order": 18},
-    "generate_daily_reviews": {"group": "AI生成", "desc": "全市场复盘 + 会员深度复盘", "default_days": 1, "order": 19},
-    "generate_ai_position_advices": {"group": "AI生成", "desc": "会员仓位建议", "default_days": 1, "order": 20},
     # 会员
     "expire_memberships": {"group": "会员管理", "desc": "过期会员处理", "default_days": 1, "order": 21},
     "grant_monthly_points": {"group": "会员管理", "desc": "月度积分发放", "default_days": 1, "order": 22},
+    # 市场拥挤度
+    "mc_pipeline": {"group": "盘后核心", "desc": "市场拥挤度管道（汇总指标+拥挤度预跑+期权）", "default_days": 1, "order": 23},
 }
 
 

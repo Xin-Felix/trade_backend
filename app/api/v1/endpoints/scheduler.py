@@ -111,7 +111,7 @@ async def toggle_job_endpoint(
 @router.post("/jobs/{job_id}/run")
 async def trigger_job(
     job_id: str,
-    days: int = Query(1, ge=1, le=30),
+    days: int = Query(1, ge=1, le=730),
     user: User = Depends(get_current_user),
 ) -> dict:
     """立即执行任务（后台运行，不影响定时调度）。"""
@@ -119,6 +119,47 @@ async def trigger_job(
     if not success:
         raise HTTPException(status_code=404, detail=f"未知任务: {job_id}")
     return {"success": True, "data": {"job_id": job_id, "days": days, "status": "started"}}
+
+
+@router.post("/backfill-year")
+async def backfill_year(
+    user: User = Depends(get_current_user),
+) -> dict:
+    """补全近一年数据（后台执行所有核心同步任务，days=365）。
+
+    包含：日K线、日线因子、指数日线、板块资金流、沪深港通、
+    涨跌停、龙虎榜、同花顺板块行情、融资融券、ETF可转债。
+    不包含分时数据（数据量大且非必须）。
+    """
+    jobs = [
+        "sync_daily_kline",
+        "sync_weekly_kline",
+        "sync_monthly_kline",
+        "sync_daily_basic",
+        "sync_index_daily",
+        "sync_sector_moneyflow",
+        "sync_stock_moneyflow",
+        "sync_moneyflow_hsgt",
+        "sync_stock_limit",
+        "sync_top_list",
+        "sync_ths_daily",
+        "sync_margin",
+        "sync_etf_cb",
+        "sync_stock_basic",
+    ]
+    started = []
+    for job_id in jobs:
+        success = run_job_now(job_id, days=365)
+        if success:
+            started.append(job_id)
+    return {
+        "success": True,
+        "data": {
+            "started": started,
+            "total": len(started),
+            "message": f"已启动 {len(started)} 个同步任务（365天），后台执行中"
+        }
+    }
 
 
 @router.get("/logs")

@@ -285,41 +285,17 @@ _SEED_JOBS = [
         "days": 1,
         "enabled": 1,
     },
+    # AI 内容任务已移除
+
+    # ====================================================================
+    # 七、市场拥挤度（盘后 17:30，依赖日K和日线因子同步完成）
+    # ====================================================================
     {
-        "job_id": "generate_daily_reviews",
-        "description": "AI 每日会员复盘",
+        "job_id": "mc_pipeline",
+        "description": "市场拥挤度管道（汇总指标+拥挤度预跑+期权）",
         "trigger_type": "cron",
-        "cron_hour": 19,
-        "cron_minute": 0,
-        "cron_day_of_week": "mon-fri",
-        "days": 1,
-        "enabled": 1,
-    },
-    {
-        "job_id": "generate_market_pulse",
-        "description": "AI 市场温度（盘中每15分钟+收盘后）",
-        "trigger_type": "interval",
-        "interval_minutes": 15,
-        "cron_day_of_week": "mon-fri",
-        "days": 1,
-        "enabled": 1,
-    },
-    {
-        "job_id": "generate_ai_morning_report",
-        "description": "AI 每日市场晨报",
-        "trigger_type": "cron",
-        "cron_hour": 8,
-        "cron_minute": 30,
-        "cron_day_of_week": "mon-fri",
-        "days": 1,
-        "enabled": 1,
-    },
-    {
-        "job_id": "generate_ai_position_advices",
-        "description": "AI 每日会员仓位建议",
-        "trigger_type": "cron",
-        "cron_hour": 19,
-        "cron_minute": 0,
+        "cron_hour": 17,
+        "cron_minute": 50,
         "cron_day_of_week": "mon-fri",
         "days": 1,
         "enabled": 1,
