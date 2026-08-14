@@ -25,7 +25,7 @@ import time as _time
 
 _cache: dict[str, tuple[float, Any]] = {}
 _cache_lock = threading.Lock()
-_CACHE_TTL = 14400  # 4 小时（行情数据盘后才更新，白天不变）
+_CACHE_TTL = 86400  # 24 小时（pipeline 跑完会 clear_cache 重新预热，所以设长一些不影响数据时效）
 
 
 def _cache_key(prefix: str, *args, **kwargs) -> str:
